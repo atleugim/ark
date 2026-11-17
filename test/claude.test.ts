@@ -18,3 +18,11 @@ test("allowlist excludes credentials and machine-local state", () => {
   }
   assert.ok(claude.allowlist.includes("settings.json"));
 });
+
+test("allowlist includes plugin manifests and cache but not the marketplace clones", () => {
+  for (const name of ["plugins/installed_plugins.json", "plugins/known_marketplaces.json", "plugins/cache"]) {
+    assert.ok(claude.allowlist.includes(name), name);
+  }
+  assert.ok(!claude.allowlist.includes("plugins"));
+  assert.ok(!claude.allowlist.includes("plugins/marketplaces"));
+});
