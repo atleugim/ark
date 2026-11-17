@@ -28,14 +28,21 @@ async function walk(root: string, rel: string, out: string[]): Promise<void> {
 
 export async function listFiles(root: string, allowlist: readonly string[]): Promise<string[]> {
   const out: string[] = [];
-  for (const item of allowlist) {
+  for (const entry of allowlist) {
+    const item = path.normalize(entry);
+    // Every segment is checked, so a symlinked parent of a nested entry is skipped too.
+    const parts = item.split(path.sep);
     let stat;
     try {
-      stat = await fs.lstat(path.join(root, item));
+      for (let i = 1; i <= parts.length; i++) {
+        stat = await fs.lstat(path.join(root, ...parts.slice(0, i)));
+        if (stat.isSymbolicLink()) break;
+      }
     } catch (err) {
-      if (isErrno(err, "ENOENT")) continue;
+      if (isErrno(err, "ENOENT", "ENOTDIR")) continue;
       throw err;
     }
+    if (!stat) continue;
     if (stat.isFile()) out.push(item);
     else if (stat.isDirectory()) await walk(root, item, out);
   }

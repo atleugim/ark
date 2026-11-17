@@ -85,6 +85,7 @@ Only this allowlist, relative to the Claude config directory:
 - `skills/`
 - `commands/`
 - `hooks/`
+- `plugins/installed_plugins.json`, `plugins/known_marketplaces.json` and `plugins/cache/` (installed plugins; marketplace clones and catalog caches are not synced). The plugin manifests store absolute paths, so they only restore cleanly when the Claude config dir has the same absolute path on every machine; otherwise rely on `enabledPlugins` / `extraKnownMarketplaces` in `settings.json` to reinstall
 
 Only regular files are read. Symlinks are skipped, including allowlisted entries that are themselves symlinks (for example, a `settings.json` symlinked from a dotfiles repo is not backed up).
 

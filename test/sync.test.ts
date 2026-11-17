@@ -113,6 +113,21 @@ test("listFiles skips symlinked files and directories", async (t) => {
   assert.deepEqual(await listFiles(root, claude.allowlist), [path.join("agents", "real.md")]);
 });
 
+test("listFiles skips nested allowlist entries under a symlinked parent", async (t) => {
+  const root = await tmp(t);
+  const outside = await tmp(t);
+  await write(outside, "cache/x.txt", "x");
+  await write(outside, "installed_plugins.json", "{}");
+  await fs.symlink(outside, path.join(root, "plugins"), "junction");
+  assert.deepEqual(await listFiles(root, claude.allowlist), []);
+});
+
+test("listFiles skips nested allowlist entries when the parent is a regular file", async (t) => {
+  const root = await tmp(t);
+  await write(root, "plugins", "not a dir");
+  assert.deepEqual(await listFiles(root, claude.allowlist), []);
+});
+
 test("identical files are skipped and not backed up", async (t) => {
   const local = await tmp(t);
   const remote = await tmp(t);

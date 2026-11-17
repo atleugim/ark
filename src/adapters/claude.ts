@@ -7,5 +7,6 @@ export const claude: ToolAdapter = {
   resolveHome: (env, homedir) => env.CLAUDE_CONFIG_DIR ? path.resolve(env.CLAUDE_CONFIG_DIR) : path.join(homedir, ".claude"),
   // Explicit allowlist: credentials, settings.local.json and machine state
   // (projects, sessions, history, caches, todos, statsig, shell snapshots) stay out.
-  allowlist: ["settings.json", "CLAUDE.md", "agents", "skills", "commands", "hooks"],
+  // Plugins: manifests plus installed copies; marketplace clones and catalog caches are re-fetchable.
+  allowlist: ["settings.json", "CLAUDE.md", "agents", "skills", "commands", "hooks", "plugins/installed_plugins.json", "plugins/known_marketplaces.json", "plugins/cache"],
 };
