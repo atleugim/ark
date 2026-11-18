@@ -85,7 +85,7 @@ Only this allowlist, relative to the Claude config directory:
 - `skills/`
 - `commands/`
 - `hooks/`
-- `plugins/installed_plugins.json`, `plugins/known_marketplaces.json` and `plugins/cache/` (installed plugins; marketplace clones and catalog caches are not synced). The plugin manifests store absolute paths, so they only restore cleanly when the Claude config dir has the same absolute path on every machine; otherwise rely on `enabledPlugins` / `extraKnownMarketplaces` in `settings.json` to reinstall
+- `plugins/installed_plugins.json`, `plugins/known_marketplaces.json` and `plugins/cache/` (installed plugins; marketplace clones and catalog caches are not synced). The plugin manifests store absolute paths, so on `backup` the local Claude config dir is replaced with the placeholder `CLAUDE_HOME` in the repo copy, and on `restore` `CLAUDE_HOME` is expanded to the local config dir. A literal `CLAUDE_HOME` already present in a manifest is also expanded on restore. Manifests that are not valid JSON are copied unchanged
 
 Only regular files are read. Symlinks are skipped, including allowlisted entries that are themselves symlinks (for example, a `settings.json` symlinked from a dotfiles repo is not backed up).
 
@@ -112,6 +112,7 @@ Implement the `ToolAdapter` interface from `src/adapters/types.ts`:
 - `name`: tool name, used for `--tool` and as the subfolder in the repo folder.
 - `resolveHome(env, homedir)`: the tool's config root on the current machine.
 - `allowlist`: files or directories, relative to that root, that are safe to sync.
+- `transform?(direction, file, data, home)`: optional content rewrite applied while copying (`direction` is `"backup"` or `"restore"`, `file` is relative to the root, `home` is the local root). Used by the Claude adapter to portabilize the plugin manifests.
 
 Then register the adapter in `src/adapters/index.ts`. See `src/adapters/claude.ts` for an example.
 

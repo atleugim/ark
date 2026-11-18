@@ -273,3 +273,32 @@ test("backup and restore tell the user to run init when the repo is missing", op
     assert.match(res.stderr, /ark init/);
   }
 });
+
+test("plugin manifests are portable in the repo and expanded on restore", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const bare = path.join(home, "remote.git");
+  git(home, "init", "-q", "--bare", "-b", "main", bare);
+  await initRepo(sync);
+  git(sync, "remote", "add", "origin", bare);
+  const manifest = path.join(claudeDir, "plugins", "installed_plugins.json");
+  const settings = path.join(claudeDir, "settings.json");
+  const text = JSON.stringify({ installPath: path.join(claudeDir, "plugins", "cache", "p") });
+  await fs.mkdir(path.dirname(manifest), { recursive: true });
+  await fs.writeFile(manifest, text);
+  await fs.writeFile(settings, JSON.stringify({ p: claudeDir }));
+
+  await runCli(["backup", "--dir", sync], claudeDir, home);
+  const stored = await fs.readFile(path.join(sync, "claude", "plugins", "installed_plugins.json"), "utf8");
+  assert.ok(!stored.includes(claudeDir));
+  assert.match(stored, /CLAUDE_HOME/);
+  assert.equal(await fs.readFile(path.join(sync, "claude", "settings.json"), "utf8"), JSON.stringify({ p: claudeDir }));
+  assert.match((await runCli(["backup", "--dir", sync], claudeDir, home)).stdout, /Nothing to sync/);
+
+  const restore = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.match(restore.stdout, /Nothing to sync/);
+  assert.equal(await fs.readFile(manifest, "utf8"), text);
+
+  await fs.rm(manifest);
+  await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(await fs.readFile(manifest, "utf8"), text);
+});
