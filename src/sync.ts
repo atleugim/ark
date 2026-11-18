@@ -1,9 +1,10 @@
+import type { Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
 export interface Change {
   file: string;
-  kind: "new" | "update";
+  kind: "new" | "update" | "delete";
 }
 
 export function isErrno(err: unknown, ...codes: string[]): boolean {
@@ -30,22 +31,28 @@ async function walk(root: string, rel: string, out: string[]): Promise<void> {
   }
 }
 
+// Stat of the entry itself; a symlink at any segment yields that link's stat, so callers skip it.
+async function statEntry(root: string, item: string): Promise<Stats | undefined> {
+  // Every segment is checked, so a symlinked parent of a nested entry is skipped too.
+  const parts = item.split(path.sep);
+  let stat: Stats | undefined;
+  try {
+    for (let i = 1; i <= parts.length; i++) {
+      stat = await fs.lstat(path.join(root, ...parts.slice(0, i)));
+      if (stat.isSymbolicLink()) break;
+    }
+  } catch (err) {
+    if (isErrno(err, "ENOENT", "ENOTDIR")) return undefined;
+    throw err;
+  }
+  return stat;
+}
+
 export async function listFiles(root: string, allowlist: readonly string[]): Promise<string[]> {
   const out: string[] = [];
   for (const entry of allowlist) {
     const item = path.normalize(entry);
-    // Every segment is checked, so a symlinked parent of a nested entry is skipped too.
-    const parts = item.split(path.sep);
-    let stat;
-    try {
-      for (let i = 1; i <= parts.length; i++) {
-        stat = await fs.lstat(path.join(root, ...parts.slice(0, i)));
-        if (stat.isSymbolicLink()) break;
-      }
-    } catch (err) {
-      if (isErrno(err, "ENOENT", "ENOTDIR")) continue;
-      throw err;
-    }
+    const stat = await statEntry(root, item);
     if (!stat) continue;
     if (stat.isFile()) out.push(item);
     else if (stat.isDirectory()) await walk(root, item, out);
@@ -121,5 +128,53 @@ export async function copyFiles(
       throw err;
     }
   }
+  await prune(from, to, allowlist, opts, changes);
   return changes;
+}
+
+// Case/normalization-insensitive so a case-only rename on APFS/NTFS never deletes the live file.
+const pathKey = (file: string) => file.normalize("NFC").toLowerCase();
+
+// Removes destination files that no longer exist in the source, only inside entries the source still has.
+async function prune(
+  from: string,
+  to: string,
+  allowlist: readonly string[],
+  opts: { dryRun: boolean; backupDir?: string; guardDest?: boolean },
+  changes: Change[],
+): Promise<void> {
+  for (const entry of allowlist) {
+    const item = path.normalize(entry);
+    const stat = await statEntry(from, item);
+    // A missing or symlinked source entry says nothing about what should exist.
+    if (!stat?.isFile() && !stat?.isDirectory()) continue;
+    const kept = new Set((await listFiles(from, [item])).map(pathKey));
+    for (const file of await listFiles(to, [item])) {
+      if (kept.has(pathKey(file))) continue;
+      if (opts.guardDest) await assertNoSymlink(to, file);
+      changes.push({ file, kind: "delete" });
+      if (opts.dryRun) continue;
+      const dest = path.join(to, file);
+      if (opts.backupDir) {
+        const backup = path.join(opts.backupDir, file);
+        await fs.mkdir(path.dirname(backup), { recursive: true });
+        await fs.writeFile(backup, await fs.readFile(dest));
+      }
+      await fs.rm(dest);
+      await removeEmptyDirs(to, file, item);
+    }
+  }
+}
+
+// Walks up from the deleted file, stopping before the allowlist entry itself.
+async function removeEmptyDirs(root: string, file: string, item: string): Promise<void> {
+  if (file === item) return;
+  for (let dir = path.dirname(file); dir !== item && dir !== "."; dir = path.dirname(dir)) {
+    try {
+      await fs.rmdir(path.join(root, dir));
+    } catch (err) {
+      if (isErrno(err, "ENOTEMPTY", "EEXIST")) return;
+      throw err;
+    }
+  }
 }

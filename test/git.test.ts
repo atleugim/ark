@@ -302,3 +302,56 @@ test("plugin manifests are portable in the repo and expanded on restore", opts, 
   await runCli(["restore", "--dir", sync], claudeDir, home);
   assert.equal(await fs.readFile(manifest, "utf8"), text);
 });
+
+async function writeFile(file: string, data: string): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, data);
+}
+
+test("backup commits the deletion of a file removed locally", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(sync, "claude", "plugins", "cache", "p", "1.0", "x"), "old");
+  git(sync, "add", "-A");
+  git(sync, "commit", "-q", "-m", "seed");
+  await writeFile(path.join(claudeDir, "plugins", "cache", "p", "2.0", "x"), "new");
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /delete: plugins\/cache\/p\/1\.0\/x/);
+  await assert.rejects(fs.stat(path.join(sync, "claude", "plugins", "cache", "p", "1.0")));
+  assert.equal(git(sync, "status", "--porcelain"), "");
+  assert.match(git(sync, "show", "--name-status", "--format=", "HEAD"), /^D\tclaude\/plugins\/cache\/p\/1\.0\/x$/m);
+  const again = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.match(again.stdout, /Nothing to sync\./);
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "2");
+});
+
+test("dry-run backup reports deletions and changes nothing", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(sync, "claude", "plugins", "cache", "p", "1.0", "x"), "old");
+  git(sync, "add", "-A");
+  git(sync, "commit", "-q", "-m", "seed");
+  await writeFile(path.join(claudeDir, "plugins", "cache", "p", "2.0", "x"), "new");
+  const res = await runCli(["backup", "--dir", sync, "--dry-run"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /would delete: plugins\/cache\/p\/1\.0\/x/);
+  assert.match(res.stdout, /would commit/);
+  assert.equal((await fs.readFile(path.join(sync, "claude", "plugins", "cache", "p", "1.0", "x"), "utf8")), "old");
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "1");
+});
+
+test("restore deletes a stale local file after backing it up", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "claude", "CLAUDE.md"), "hello");
+  await writeFile(path.join(sync, "claude", "plugins", "cache", "p", "2.0", "x"), "new");
+  await writeFile(path.join(claudeDir, "plugins", "cache", "p", "1.0", "x"), "old");
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /delete: plugins\/cache\/p\/1\.0\/x/);
+  await assert.rejects(fs.stat(path.join(claudeDir, "plugins", "cache", "p", "1.0", "x")));
+  const stamps = await fs.readdir(path.join(home, ".ark", "backups", "claude"));
+  assert.equal(await fs.readFile(path.join(home, ".ark", "backups", "claude", stamps[0], "plugins", "cache", "p", "1.0", "x"), "utf8"), "old");
+  const again = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.match(again.stdout, /Nothing to sync\./);
+});

@@ -197,3 +197,108 @@ test("repo dir: flag wins over the saved value", async (t) => {
   const dir = path.join(home, "flag");
   assert.equal(await resolveRepoDir({ flag: dir, homedir: home }), dir);
 });
+
+test("backup prunes files gone from the source and removes emptied dirs", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(remote, "plugins/cache/p/1.0/x", "old");
+  await write(local, "plugins/cache/p/2.0/x", "new");
+  const changes = await copyFiles(local, remote, claude.allowlist, { dryRun: false, guardDest: true });
+  assert.deepEqual(changes, [
+    { file: path.join("plugins", "cache", "p", "2.0", "x"), kind: "new" },
+    { file: path.join("plugins", "cache", "p", "1.0", "x"), kind: "delete" },
+  ]);
+  assert.deepEqual(await fs.readdir(path.join(remote, "plugins", "cache", "p")), ["2.0"]);
+  assert.deepEqual(await copyFiles(local, remote, claude.allowlist, { dryRun: false, guardDest: true }), []);
+});
+
+test("restore saves a pruned local file to the backup dir first", async (t) => {
+  const remote = await tmp(t);
+  const local = await tmp(t);
+  const backups = await tmp(t);
+  await write(remote, "skills/a/SKILL.md", "kept");
+  await write(local, "skills/a/SKILL.md", "kept");
+  await write(local, "skills/gone/SKILL.md", "bye");
+  await copyFiles(remote, local, claude.allowlist, { dryRun: false, backupDir: backups });
+  const file = path.join("skills", "gone", "SKILL.md");
+  assert.equal(await fs.readFile(path.join(backups, file), "utf8"), "bye");
+  await assert.rejects(fs.stat(path.join(local, file)));
+});
+
+test("dry run reports deletions and leaves every file", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "skills/a/SKILL.md", "x");
+  await write(remote, "skills/a/SKILL.md", "x");
+  await write(remote, "skills/old/SKILL.md", "y");
+  const changes = await copyFiles(local, remote, claude.allowlist, { dryRun: true });
+  assert.deepEqual(changes, [{ file: path.join("skills", "old", "SKILL.md"), kind: "delete" }]);
+  assert.equal(await fs.readFile(path.join(remote, "skills", "old", "SKILL.md"), "utf8"), "y");
+});
+
+test("pruning never touches files outside the allowlist", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "CLAUDE.md", "x");
+  await write(remote, "CLAUDE.md", "x");
+  await write(remote, "README.md", "keep");
+  await write(remote, ".credentials.json", "keep");
+  assert.deepEqual(await copyFiles(local, remote, claude.allowlist, { dryRun: false }), []);
+  assert.deepEqual((await fs.readdir(remote)).sort(), [".credentials.json", "CLAUDE.md", "README.md"]);
+});
+
+test("an allowlist entry missing from the source is not pruned", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "CLAUDE.md", "x");
+  await write(remote, "skills/a/SKILL.md", "keep");
+  assert.deepEqual(await copyFiles(local, remote, claude.allowlist, { dryRun: false }), [
+    { file: "CLAUDE.md", kind: "new" },
+  ]);
+  assert.equal(await fs.readFile(path.join(remote, "skills", "a", "SKILL.md"), "utf8"), "keep");
+});
+
+test("an allowlist entry symlinked in the source is not pruned", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  const elsewhere = await tmp(t);
+  await write(elsewhere, "a/SKILL.md", "x");
+  await fs.symlink(elsewhere, path.join(local, "skills"), "junction");
+  await write(remote, "skills/a/SKILL.md", "keep");
+  assert.deepEqual(await copyFiles(local, remote, claude.allowlist, { dryRun: false }), []);
+  assert.equal(await fs.readFile(path.join(remote, "skills", "a", "SKILL.md"), "utf8"), "keep");
+});
+
+test("an empty source directory still prunes its destination files", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await fs.mkdir(path.join(local, "skills"));
+  await write(remote, "skills/a/SKILL.md", "x");
+  const changes = await copyFiles(local, remote, claude.allowlist, { dryRun: false });
+  assert.deepEqual(changes, [{ file: path.join("skills", "a", "SKILL.md"), kind: "delete" }]);
+  assert.deepEqual(await fs.readdir(path.join(remote, "skills")), []);
+});
+
+test("a case-only difference in a path never prunes the live file", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "skills/Foo/SKILL.md", "x");
+  await write(remote, "skills/foo/SKILL.md", "x");
+  const opts = { dryRun: false };
+  const changes = await copyFiles(local, remote, claude.allowlist, opts);
+  assert.equal(changes.some((c) => c.kind === "delete"), false);
+  assert.equal(await fs.readFile(path.join(remote, "skills", "foo", "SKILL.md"), "utf8"), "x");
+  assert.deepEqual(await copyFiles(local, remote, claude.allowlist, opts), []);
+});
+
+test("guardDest refuses to prune through a symlinked destination root", async (t) => {
+  const local = await tmp(t);
+  const realRemote = await tmp(t);
+  const parent = await tmp(t);
+  const remote = path.join(parent, "link");
+  await fs.mkdir(path.join(local, "skills"));
+  await write(realRemote, "skills/a/SKILL.md", "keep");
+  await fs.symlink(realRemote, remote, "junction");
+  await assert.rejects(copyFiles(local, remote, claude.allowlist, { dryRun: false, guardDest: true }));
+  assert.equal(await fs.readFile(path.join(realRemote, "skills", "a", "SKILL.md"), "utf8"), "keep");
+});

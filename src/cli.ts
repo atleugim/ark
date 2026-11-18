@@ -9,7 +9,7 @@ import { commitAndPush, gitClone, gitPull, hasChanges, isGitBacked } from "./git
 import { copyFiles, isErrno, listFiles } from "./sync.ts";
 
 const usage =
-  "Usage: ark init <git-url>\n       ark <backup|restore> [--tool claude] [--dry-run]\n       ark -h|--help\nThe repo lives in ~/.ark/repo (--dir <path> overrides it). Files are never deleted; removals do not propagate.";
+  "Usage: ark init <git-url>\n       ark <backup|restore> [--tool claude] [--dry-run]\n       ark -h|--help\nThe repo lives in ~/.ark/repo (--dir <path> overrides it). Files removed from a synced folder are removed on the other side too (restore saves them to ~/.ark/backups first).";
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -76,7 +76,11 @@ async function main(): Promise<void> {
   if (changes.length === 0) console.log("Nothing to sync.");
 
   if (gitBacked && command === "backup") {
-    const paths = (await listFiles(remote, adapter.allowlist)).map((file) => path.posix.join(adapter.name, file.split(path.sep).join("/")));
+    // Deleted files are gone from disk, so listFiles misses them; add them so the commit records the removal.
+    const toRepoPath = (file: string) => path.posix.join(adapter.name, file.split(path.sep).join("/"));
+    const present = (await listFiles(remote, adapter.allowlist)).map(toRepoPath);
+    const deleted = changes.filter((change) => change.kind === "delete").map((change) => toRepoPath(change.file));
+    const paths = [...new Set([...present, ...deleted])];
     if (dryRun) {
       if (changes.length > 0 || (await hasChanges(syncDir, paths))) console.log("would commit");
     } else {
