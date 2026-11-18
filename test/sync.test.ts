@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { claude } from "../src/adapters/claude.ts";
-import { defaultRepoDir, resolveRepoDir, saveRepoDir } from "../src/config.ts";
-import { copyFiles, listFiles } from "../src/sync.ts";
+import { addIncludes, defaultRepoDir, readIncludes, resolveRepoDir, saveRepoDir } from "../src/config.ts";
+import { copyFiles, isBlocked, listFiles, listTopLevel, normalizeUserPath } from "../src/sync.ts";
 
 async function tmp(t: TestContext): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ark-"));
@@ -198,6 +198,39 @@ test("repo dir: flag wins over the saved value", async (t) => {
   assert.equal(await resolveRepoDir({ flag: dir, homedir: home }), dir);
 });
 
+test("includes: missing config has none and bad values are ignored", async (t) => {
+  const home = await tmp(t);
+  assert.deepEqual(await readIncludes(home, "claude"), []);
+  await write(home, ".ark/config.json", JSON.stringify({ include: { claude: ["rules", 3, null], other: "x" } }));
+  assert.deepEqual(await readIncludes(home, "claude"), ["rules"]);
+  assert.deepEqual(await readIncludes(home, "other"), []);
+  await write(home, ".ark/config.json", JSON.stringify({ include: "nope" }));
+  assert.deepEqual(await readIncludes(home, "claude"), []);
+});
+
+test("includes: invalid JSON is rethrown", async (t) => {
+  const home = await tmp(t);
+  await write(home, ".ark/config.json", "{");
+  await assert.rejects(readIncludes(home, "claude"));
+});
+
+test("includes: addIncludes dedupes case-insensitively and keeps other keys", async (t) => {
+  const home = await tmp(t);
+  await saveRepoDir(home, "/r");
+  await addIncludes(home, "claude", ["rules", "docs/a"]);
+  await addIncludes(home, "claude", ["Rules", "docs/a", "x"]);
+  const config = JSON.parse(await fs.readFile(path.join(home, ".ark", "config.json"), "utf8"));
+  assert.deepEqual(config, { repo: "/r", include: { claude: ["rules", "docs/a", "x"] } });
+});
+
+test("saveRepoDir keeps saved includes", async (t) => {
+  const home = await tmp(t);
+  await addIncludes(home, "claude", ["rules"]);
+  await saveRepoDir(home, "/new");
+  const config = JSON.parse(await fs.readFile(path.join(home, ".ark", "config.json"), "utf8"));
+  assert.deepEqual(config, { repo: "/new", include: { claude: ["rules"] } });
+});
+
 test("backup prunes files gone from the source and removes emptied dirs", async (t) => {
   const local = await tmp(t);
   const remote = await tmp(t);
@@ -301,4 +334,95 @@ test("guardDest refuses to prune through a symlinked destination root", async (t
   await fs.symlink(realRemote, remote, "junction");
   await assert.rejects(copyFiles(local, remote, claude.allowlist, { dryRun: false, guardDest: true }));
   assert.equal(await fs.readFile(path.join(realRemote, "skills", "a", "SKILL.md"), "utf8"), "keep");
+});
+
+test("listTopLevel returns entry names, skipping OS junk, and is empty for a missing dir", async (t) => {
+  const root = await tmp(t);
+  await write(root, "rules/a.md", "x");
+  await write(root, "settings.json", "{}");
+  await write(root, ".DS_Store", "x");
+  await write(root, "._settings.json", "x");
+  assert.deepEqual((await listTopLevel(root)).sort(), ["rules", "settings.json"]);
+  assert.deepEqual(await listTopLevel(path.join(root, "missing")), []);
+});
+
+test("isBlocked matches names ignoring case, normalization and trailing dots or spaces", () => {
+  const blocked = [".credentials.json", "projects", "sessions", "settings.local.json", "file-history"];
+  const names = ["projects", "Projects", "PROJECTS.", "projects. ", ".Credentials.json"];
+  // Full Unicode case folding: APFS/NTFS treat these as the same file.
+  names.push("\u017Fessions", "\u017Fettings.local.json", "\uFB01le-history");
+  for (const name of names) {
+    assert.ok(isBlocked(name, blocked), name);
+  }
+  for (const name of ["project", "projects.bak", "rules"]) {
+    assert.ok(!isBlocked(name, blocked), name);
+  }
+});
+
+test("normalizeUserPath canonicalizes separators and rejects unsafe paths", () => {
+  assert.equal(normalizeUserPath("skills/foo"), path.join("skills", "foo"));
+  assert.equal(normalizeUserPath("skills\\foo\\"), path.join("skills", "foo"));
+  assert.equal(normalizeUserPath("./settings.json"), "settings.json");
+  for (const bad of ["", ".", "./", "/abs", "\\abs", "C:\\x", "../x", "a/../b", "a\\..\\b"]) {
+    assert.throws(() => normalizeUserPath(bad), /path/i, JSON.stringify(bad));
+  }
+});
+
+test("listFiles dedupes overlapping entries", async (t) => {
+  const root = await tmp(t);
+  await write(root, "skills/a/SKILL.md", "x");
+  const files = await listFiles(root, ["skills", "skills/a", "skills/a/SKILL.md"]);
+  assert.deepEqual(files, [path.join("skills", "a", "SKILL.md")]);
+});
+
+test("listFiles keeps case-distinct files found by one walk", async (t) => {
+  const root = await tmp(t);
+  await write(root, "d/A.md", "x");
+  await write(root, "d/a.md", "y");
+  // Probe the filesystem directly: on a case-insensitive one the second write overwrote the first.
+  if ((await fs.readFile(path.join(root, "d", "A.md"), "utf8")) !== "x") return t.skip("case-insensitive filesystem");
+  const files = await listFiles(root, ["d"]);
+  assert.deepEqual(files, [path.join("d", "A.md"), path.join("d", "a.md")]);
+});
+
+test("listFiles folds case across overlapping entries", async (t) => {
+  const root = await tmp(t);
+  await write(root, "d/a.md", "x");
+  const caseInsensitive = await fs.stat(path.join(root, "D", "a.md")).then(() => true, () => false);
+  if (!caseInsensitive) return t.skip("case-sensitive filesystem");
+  assert.deepEqual(await listFiles(root, ["d", "D/a.md"]), [path.join("d", "a.md")]);
+});
+
+test("listFiles omits excluded files and directories, ignoring case", async (t) => {
+  const root = await tmp(t);
+  await write(root, "skills/foo/SKILL.md", "x");
+  await write(root, "skills/foobar/SKILL.md", "x");
+  await write(root, "settings.json", "{}");
+  const files = await listFiles(root, claude.allowlist, ["Skills/FOO", "settings.json"]);
+  assert.deepEqual(files, [path.join("skills", "foobar", "SKILL.md")]);
+});
+
+test("an excluded path is neither copied nor pruned", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "skills/foo/SKILL.md", "new");
+  await write(local, "skills/bar/SKILL.md", "bar");
+  await write(remote, "skills/foo/SKILL.md", "old");
+  await write(remote, "skills/foo/gone.md", "old");
+  const changes = await copyFiles(local, remote, claude.allowlist, { dryRun: false, guardDest: true, exclude: [path.join("skills", "foo")] });
+  assert.deepEqual(changes, [{ file: path.join("skills", "bar", "SKILL.md"), kind: "new" }]);
+  assert.equal(await fs.readFile(path.join(remote, "skills", "foo", "SKILL.md"), "utf8"), "old");
+  assert.equal(await fs.readFile(path.join(remote, "skills", "foo", "gone.md"), "utf8"), "old");
+});
+
+test("an excluded file inside an entry is left alone while siblings are pruned", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "skills/a/keep.md", "x");
+  await write(remote, "skills/a/keep.md", "x");
+  await write(remote, "skills/a/mine.md", "x");
+  await write(remote, "skills/a/gone.md", "x");
+  const changes = await copyFiles(local, remote, claude.allowlist, { dryRun: false, exclude: [path.join("skills", "a", "mine.md")] });
+  assert.deepEqual(changes, [{ file: path.join("skills", "a", "gone.md"), kind: "delete" }]);
+  assert.deepEqual((await fs.readdir(path.join(remote, "skills", "a"))).sort(), ["keep.md", "mine.md"]);
 });

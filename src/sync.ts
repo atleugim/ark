@@ -48,16 +48,53 @@ async function statEntry(root: string, item: string): Promise<Stats | undefined>
   return stat;
 }
 
-export async function listFiles(root: string, allowlist: readonly string[]): Promise<string[]> {
+// Top-level entry names of a directory (OS junk skipped); a missing directory has none.
+export async function listTopLevel(root: string): Promise<string[]> {
+  try {
+    return (await fs.readdir(root)).filter((name) => !isOsJunk(name));
+  } catch (err) {
+    if (isErrno(err, "ENOENT", "ENOTDIR")) return [];
+    throw err;
+  }
+}
+
+// Turns a user-given path into a canonical one relative to the tool root, or throws.
+export function normalizeUserPath(input: string): string {
+  const slashed = input.replaceAll("\\", "/");
+  if (path.posix.isAbsolute(slashed) || path.win32.isAbsolute(input)) throw new Error(`Invalid path "${input}": must be relative to the tool folder`);
+  const parts = slashed.split("/").filter((part) => part !== "" && part !== ".");
+  if (parts.includes("..")) throw new Error(`Invalid path "${input}": must not contain ".."`);
+  if (parts.length === 0) throw new Error(`Invalid path "${input}": must name a file or folder inside the tool folder`);
+  return parts.join(path.sep);
+}
+
+// Same folding as prune, so an excluded path also covers case-only variants.
+const isExcluded = (file: string, exclude: readonly string[]) => {
+  const key = pathKey(file);
+  return exclude.some((item) => {
+    const excluded = pathKey(item);
+    return key === excluded || key.startsWith(excluded + path.sep);
+  });
+};
+
+export async function listFiles(root: string, allowlist: readonly string[], exclude: readonly string[] = []): Promise<string[]> {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const entry of allowlist) {
     const item = path.normalize(entry);
     const stat = await statEntry(root, item);
     if (!stat) continue;
-    if (stat.isFile()) out.push(item);
-    else if (stat.isDirectory()) await walk(root, item, out);
+    const files: string[] = [];
+    if (stat.isFile()) files.push(item);
+    else if (stat.isDirectory()) await walk(root, item, files);
+    // Overlapping entries list the same file more than once; adapter entries come first, so their casing wins.
+    // Only cross-entry overlap is folded, so case-distinct files on a case-sensitive FS both survive
+    // (tradeoff: an include differing from an adapter entry only by case is folded there too).
+    const fresh = files.filter((file) => !seen.has(pathKey(file)));
+    for (const file of files) seen.add(pathKey(file));
+    out.push(...fresh);
   }
-  return out.sort();
+  return out.filter((file) => !isExcluded(file, exclude)).sort();
 }
 
 // The sync dir is a shared folder, so it must not redirect writes elsewhere.
@@ -98,10 +135,12 @@ export async function copyFiles(
     guardDest?: boolean;
     // Rewrites file content before comparing and writing; backups keep the raw destination bytes.
     transform?: (file: string, data: Buffer) => Buffer;
+    // Paths (from normalizeUserPath) that are neither copied nor pruned.
+    exclude?: readonly string[];
   },
 ): Promise<Change[]> {
   const changes: Change[] = [];
-  for (const file of await listFiles(from, allowlist)) {
+  for (const file of await listFiles(from, allowlist, opts.exclude)) {
     let dest = path.join(to, file);
     if (opts.guardDest) await assertNoSymlink(to, file);
     const [rawData, destData] = await Promise.all([fs.readFile(path.join(from, file)), readIfExists(dest)]);
@@ -133,14 +172,31 @@ export async function copyFiles(
 }
 
 // Case/normalization-insensitive so a case-only rename on APFS/NTFS never deletes the live file.
-const pathKey = (file: string) => file.normalize("NFC").toLowerCase();
+export const pathKey = (file: string) => file.normalize("NFC").toLowerCase();
+
+// First spelling wins, so adapter entries keep their own casing.
+export function uniqueByKey(entries: readonly string[]): string[] {
+  const seen = new Map<string, string>();
+  for (const entry of entries) {
+    const key = pathKey(entry);
+    if (!seen.has(key)) seen.set(key, entry);
+  }
+  return [...seen.values()];
+}
+
+// Stricter than pathKey: APFS/NTFS fold full Unicode case ("\u017Fettings" is "settings") and NTFS
+// also resolves "projects." and "projects " to "projects".
+export const isBlocked = (name: string, blocked: readonly string[]) => {
+  const key = (file: string) => file.normalize("NFKC").toUpperCase().toLowerCase().replace(/[. ]+$/, "");
+  return blocked.some((item) => key(item) === key(name));
+};
 
 // Removes destination files that no longer exist in the source, only inside entries the source still has.
 async function prune(
   from: string,
   to: string,
   allowlist: readonly string[],
-  opts: { dryRun: boolean; backupDir?: string; guardDest?: boolean },
+  opts: { dryRun: boolean; backupDir?: string; guardDest?: boolean; exclude?: readonly string[] },
   changes: Change[],
 ): Promise<void> {
   for (const entry of allowlist) {
@@ -148,8 +204,8 @@ async function prune(
     const stat = await statEntry(from, item);
     // A missing or symlinked source entry says nothing about what should exist.
     if (!stat?.isFile() && !stat?.isDirectory()) continue;
-    const kept = new Set((await listFiles(from, [item])).map(pathKey));
-    for (const file of await listFiles(to, [item])) {
+    const kept = new Set((await listFiles(from, [item], opts.exclude)).map(pathKey));
+    for (const file of await listFiles(to, [item], opts.exclude)) {
       if (kept.has(pathKey(file))) continue;
       if (opts.guardDest) await assertNoSymlink(to, file);
       changes.push({ file, kind: "delete" });
