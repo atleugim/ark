@@ -379,9 +379,9 @@ test("listFiles keeps case-distinct files found by one walk", async (t) => {
   const root = await tmp(t);
   await write(root, "d/A.md", "x");
   await write(root, "d/a.md", "y");
+  // Probe the filesystem directly: on a case-insensitive one the second write overwrote the first.
+  if ((await fs.readFile(path.join(root, "d", "A.md"), "utf8")) !== "x") return t.skip("case-insensitive filesystem");
   const files = await listFiles(root, ["d"]);
-  // On a case-insensitive filesystem the second write overwrote the first.
-  if (files.length === 1) return t.skip("case-insensitive filesystem");
   assert.deepEqual(files, [path.join("d", "A.md"), path.join("d", "a.md")]);
 });
 

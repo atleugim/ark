@@ -47,8 +47,8 @@ ark backup --dry-run   # list changes without writing anything
 ark restore            # git pull --ff-only, then ~/.ark/repo/claude -> local config (also deletes, see Deletions)
 ark restore --dry-run  # list changes without writing anything
 ark backup --include output-styles --include notes  # also back up these paths, and remember them
-ark backup --exclude skills/scratch                # skip this path for this run only
-ark restore --exclude plugins/marketplaces             # skip this path for this run only
+ark backup --exclude skills/scratch                 # skip this path for this run only
+ark restore --exclude plugins/marketplaces          # skip this path for this run only
 ```
 
 - `backup` copies the local config into `<repo>/<tool>`. It fails with a hint to run `ark init` if the repo folder does not exist.

@@ -42,7 +42,10 @@ async function readConfig(homedir: string): Promise<Record<string, unknown>> {
 async function writeConfig(homedir: string, config: Record<string, unknown>): Promise<void> {
   const file = configPath(homedir);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(config, null, 2) + "\n");
+  // Temp file + rename so a crash can't leave half-written JSON that breaks every command.
+  const tmp = `${file}.tmp-${process.pid}`;
+  await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n");
+  await fs.rename(tmp, file);
 }
 
 function includesOf(config: Record<string, unknown>, tool: string): string[] {
