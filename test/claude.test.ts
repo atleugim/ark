@@ -26,3 +26,55 @@ test("allowlist includes plugin manifests and cache but not the marketplace clon
   assert.ok(!claude.allowlist.includes("plugins"));
   assert.ok(!claude.allowlist.includes("plugins/marketplaces"));
 });
+
+const manifest = "plugins/installed_plugins.json";
+const transform = (direction: "backup" | "restore", file: string, text: string, home: string) => {
+  assert.ok(claude.transform);
+  return claude.transform(direction, file, Buffer.from(text), home).toString();
+};
+
+test("backup replaces the local root with CLAUDE_HOME in both manifests", () => {
+  const home = "/Users/x/.claude";
+  for (const file of [manifest, "plugins/known_marketplaces.json"]) {
+    const text = JSON.stringify({ installPath: `${home}/plugins/cache/p`, other: home });
+    const out = transform("backup", file, text, home);
+    assert.ok(!out.includes(home));
+    assert.equal(out, JSON.stringify({ installPath: "CLAUDE_HOME/plugins/cache/p", other: "CLAUDE_HOME" }));
+  }
+});
+
+test("restore expands CLAUDE_HOME and a same-machine round trip is byte-identical", () => {
+  const home = "/Users/x/.claude";
+  const text = JSON.stringify({ installPath: `${home}/plugins/cache/p` }, null, 2);
+  const stored = transform("backup", manifest, text, home);
+  assert.equal(transform("restore", manifest, stored, home), text);
+});
+
+test("other files are copied unchanged", () => {
+  const home = "/Users/x/.claude";
+  const text = JSON.stringify({ p: home });
+  assert.equal(transform("backup", "settings.json", text, home), text);
+  assert.equal(transform("backup", "plugins/cache/a/b.json", text, home), text);
+});
+
+test("invalid JSON manifests are copied unchanged", () => {
+  const home = "/Users/x/.claude";
+  const text = `{ "p": "${home}/x", `;
+  assert.equal(transform("backup", manifest, text, home), text);
+  assert.equal(transform("restore", manifest, "{ CLAUDE_HOME", home), "{ CLAUDE_HOME");
+});
+
+test("only replaces the root at a path boundary", () => {
+  const home = "/Users/x/.claude";
+  const text = JSON.stringify({ p: `${home}-other/x` });
+  assert.equal(transform("backup", manifest, text, home), text);
+});
+
+test("Windows roots are matched and restored in JSON-escaped form", () => {
+  const home = "C:\\Users\\x\\.claude";
+  const text = JSON.stringify({ p: `${home}\\plugins\\cache` });
+  const stored = transform("backup", manifest, text, home);
+  assert.equal(stored, JSON.stringify({ p: "CLAUDE_HOME\\plugins\\cache" }));
+  assert.equal(transform("restore", manifest, stored, home), text);
+  assert.deepEqual(JSON.parse(transform("restore", manifest, stored, home)), { p: `${home}\\plugins\\cache` });
+});

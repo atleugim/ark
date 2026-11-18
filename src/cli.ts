@@ -55,9 +55,13 @@ async function main(): Promise<void> {
 
   const gitBacked = await isGitBacked(syncDir);
 
+  const { transform: adapterTransform } = adapter;
+  const backupTransform = adapterTransform && ((file: string, data: Buffer) => adapterTransform("backup", file, data, local));
+  const restoreTransform = adapterTransform && ((file: string, data: Buffer) => adapterTransform("restore", file, data, local));
+
   let changes;
   if (command === "backup") {
-    changes = await copyFiles(local, remote, adapter.allowlist, { dryRun, guardDest: true });
+    changes = await copyFiles(local, remote, adapter.allowlist, { dryRun, guardDest: true, transform: backupTransform });
   } else {
     if (gitBacked && !dryRun) await gitPull(syncDir);
     await fs.stat(remote).catch((err: unknown) => {
@@ -65,7 +69,7 @@ async function main(): Promise<void> {
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const backupDir = path.join(homedir, ".ark", "backups", adapter.name, stamp);
-    changes = await copyFiles(remote, local, adapter.allowlist, { dryRun, backupDir });
+    changes = await copyFiles(remote, local, adapter.allowlist, { dryRun, backupDir, transform: restoreTransform });
   }
 
   for (const change of changes) console.log(`${dryRun ? "would " : ""}${change.kind}: ${change.file}`);

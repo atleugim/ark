@@ -85,13 +85,16 @@ export async function copyFiles(
     backupDir?: string;
     // Reject symlinks along the destination path (set when the destination is the sync dir).
     guardDest?: boolean;
+    // Rewrites file content before comparing and writing; backups keep the raw destination bytes.
+    transform?: (file: string, data: Buffer) => Buffer;
   },
 ): Promise<Change[]> {
   const changes: Change[] = [];
   for (const file of await listFiles(from, allowlist)) {
     let dest = path.join(to, file);
     if (opts.guardDest) await assertNoSymlink(to, file);
-    const [srcData, destData] = await Promise.all([fs.readFile(path.join(from, file)), readIfExists(dest)]);
+    const [rawData, destData] = await Promise.all([fs.readFile(path.join(from, file)), readIfExists(dest)]);
+    const srcData = opts.transform ? opts.transform(file, rawData) : rawData;
     if (destData?.equals(srcData)) continue;
     changes.push({ file, kind: destData ? "update" : "new" });
     if (opts.dryRun) continue;

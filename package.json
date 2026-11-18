@@ -1,6 +1,6 @@
 {
   "name": "@atleugim/ark",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Back up and restore AI agent configuration (Claude Code today), extensible to other AI tools.",
   "type": "module",

@@ -138,6 +138,41 @@ test("identical files are skipped and not backed up", async (t) => {
   assert.deepEqual(await fs.readdir(local), ["settings.json"]);
 });
 
+const upper = (_file: string, data: Buffer): Buffer => Buffer.from(data.toString().toUpperCase());
+
+test("transform result is compared and written, and equal results are skipped", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "settings.json", "abc");
+  await write(remote, "settings.json", "ABC");
+  const same = await copyFiles(local, remote, claude.allowlist, { dryRun: false, transform: upper });
+  assert.deepEqual(same, []);
+  await write(local, "settings.json", "xyz");
+  const changes = await copyFiles(local, remote, claude.allowlist, { dryRun: false, transform: upper });
+  assert.deepEqual(changes, [{ file: "settings.json", kind: "update" }]);
+  assert.equal(await fs.readFile(path.join(remote, "settings.json"), "utf8"), "XYZ");
+});
+
+test("transform keeps raw destination bytes in the backup", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  const backupDir = path.join(await tmp(t), "backup");
+  await write(remote, "settings.json", "abc");
+  await write(local, "settings.json", "old");
+  await copyFiles(remote, local, claude.allowlist, { dryRun: false, backupDir, transform: upper });
+  assert.equal(await fs.readFile(path.join(backupDir, "settings.json"), "utf8"), "old");
+  assert.equal(await fs.readFile(path.join(local, "settings.json"), "utf8"), "ABC");
+});
+
+test("transform dry run reports on the transformed comparison and writes nothing", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "settings.json", "abc");
+  const changes = await copyFiles(local, remote, claude.allowlist, { dryRun: true, transform: upper });
+  assert.deepEqual(changes, [{ file: "settings.json", kind: "new" }]);
+  assert.deepEqual(await fs.readdir(remote), []);
+});
+
 test("repo dir defaults to ~/.ark/repo", async (t) => {
   const home = await tmp(t);
   assert.equal(await resolveRepoDir({ homedir: home }), path.join(home, ".ark", "repo"));
