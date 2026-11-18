@@ -52,7 +52,7 @@ ark restore --dry-run  # list changes without writing anything
 - `restore` copies `<repo>/<tool>` into the local config. It fails if the repo or `<repo>/<tool>` does not exist (run `ark init`, and `ark backup` on the machine that has the config).
 - `--tool <name>`: tool adapter to use (default `claude`).
 - `--dir <path>`: use this folder instead of `~/.ark/repo` (mainly for tests).
-- `--dry-run`: print what would change (`would new: <file>` / `would update: <file>`) without writing files.
+- `--dry-run`: print what would change (`would new: <file>` / `would update: <file>` / `would delete: <file>`) without writing files.
 
 The local Claude config directory is `~/.claude`, or `CLAUDE_CONFIG_DIR` if set.
 
@@ -70,7 +70,7 @@ pnpm build
 The repo folder is a git repository, so `backup` and `restore` use git.
 
 - `restore` runs `git pull --ff-only` in the repo first, then copies. If the pull fails (diverged history, no remote, network), it stops with git's error and copies nothing.
-- `backup` copies, then commits any changes as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). Only allowlisted files under `<repo>/<tool>` are committed; other files in the folder are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
+- `backup` copies, then commits any changes as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). Only allowlisted files under `<repo>/<tool>` are committed (including removals of files that `backup` deleted); other files in the folder are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
 - `--dry-run` runs no git writes. `backup` prints `would commit` if there would be changes; `restore` skips the git pull.
 - Your existing git identity is used. The repo is trusted: git runs its hooks and config. Conflicts are never resolved automatically: if a pull or push fails, resolve it by hand with git in the repo, then run the command again.
 - A plain folder at the repo path (no `.git`) still works for `backup` and `restore` without git.
@@ -91,13 +91,19 @@ Only regular files are read. OS metadata files (`.DS_Store`, `._*`, `Thumbs.db`,
 
 Never synced: credentials, `settings.local.json`, and machine-local state (projects, sessions, history, caches, todos, statsig, shell snapshots). Anything not in the allowlist is ignored.
 
-Files are never deleted. Removing a file on one machine does not remove it on the other.
+Deletions propagate inside the allowlisted entries: a file that is gone from the source is removed from the destination (`delete: <file>`), and subfolders left empty are removed (the allowlisted folder itself is kept). `backup` deletes files from the repo copy; `restore` deletes local allowlisted files that are absent from the repo, so a local file you never backed up is removed by `restore`. An allowlisted entry that is missing entirely in the source is not pruned, and files outside the allowlist are never touched. Paths that differ only by case are treated as the same file, so a case-only rename never deletes the live file.
 
-There is no conflict detection: the last backup wins. `backup` overwrites files in the repo without a backup; only `restore` backs up local files. Run with `--dry-run` first to review changes.
+Known limitations of pruning:
+
+- If the commit fails after `backup` deleted a repo file, the next `backup` does not see that file as a change, so the removal is not committed automatically. Remove it with git in the repo.
+- On a case-sensitive filesystem, a stale duplicate that differs from a live file only by case is not pruned.
+- A folder that holds only OS metadata files (skipped, see above) is not removed.
+
+There is no conflict detection: the last backup wins. `backup` overwrites and deletes files in the repo without a backup (in a git-backed repo, git history is the recovery); only `restore` backs up local files. Run with `--dry-run` first to review changes.
 
 ## Backups
 
-Before `restore` overwrites an existing local file, the previous content is saved to `~/.ark/backups/<tool>/<timestamp>/<file>`.
+Before `restore` overwrites or deletes an existing local file, the previous content is saved to `~/.ark/backups/<tool>/<timestamp>/<file>`.
 
 ## Safety notes
 
