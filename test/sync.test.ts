@@ -30,6 +30,17 @@ test("listFiles only returns allowlisted files, including nested ones", async (t
   assert.deepEqual(files, [path.join("agents", "a", "b.md"), "settings.json"]);
 });
 
+test("listFiles skips OS metadata files", async (t) => {
+  const root = await tmp(t);
+  await write(root, "skills/a/SKILL.md", "x");
+  await write(root, "skills/.DS_Store", "x");
+  await write(root, "skills/a/._SKILL.md", "x");
+  await write(root, "skills/a/Thumbs.db", "x");
+  await write(root, "skills/a/desktop.ini", "x");
+  const files = await listFiles(root, claude.allowlist);
+  assert.deepEqual(files, [path.join("skills", "a", "SKILL.md")]);
+});
+
 test("backup copies allowlisted files and never credentials", async (t) => {
   const local = await tmp(t);
   const remote = await tmp(t);
