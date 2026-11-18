@@ -10,6 +10,10 @@ export function isErrno(err: unknown, ...codes: string[]): boolean {
   return err instanceof Error && "code" in err && typeof err.code === "string" && codes.includes(err.code);
 }
 
+// OS metadata that tools write on their own; never worth syncing. "._*" are macOS AppleDouble files.
+const OS_JUNK = new Set([".DS_Store", ".localized", "Thumbs.db", "ehthumbs.db", "desktop.ini"]);
+const isOsJunk = (name: string) => OS_JUNK.has(name) || name.startsWith("._");
+
 // Regular files only: symlinks and special files are skipped.
 async function walk(root: string, rel: string, out: string[]): Promise<void> {
   let entries;
@@ -22,7 +26,7 @@ async function walk(root: string, rel: string, out: string[]): Promise<void> {
   for (const entry of entries) {
     const child = path.join(rel, entry.name);
     if (entry.isDirectory()) await walk(root, child, out);
-    else if (entry.isFile()) out.push(child);
+    else if (entry.isFile() && !isOsJunk(entry.name)) out.push(child);
   }
 }
 

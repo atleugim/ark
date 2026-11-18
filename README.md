@@ -87,7 +87,7 @@ Only this allowlist, relative to the Claude config directory:
 - `hooks/`
 - `plugins/installed_plugins.json`, `plugins/known_marketplaces.json` and `plugins/cache/` (installed plugins; marketplace clones and catalog caches are not synced). The plugin manifests store absolute paths, so on `backup` the local Claude config dir is replaced with the placeholder `CLAUDE_HOME` in the repo copy, and on `restore` `CLAUDE_HOME` is expanded to the local config dir. A literal `CLAUDE_HOME` already present in a manifest is also expanded on restore. Manifests that are not valid JSON are copied unchanged
 
-Only regular files are read. Symlinks are skipped, including allowlisted entries that are themselves symlinks (for example, a `settings.json` symlinked from a dotfiles repo is not backed up).
+Only regular files are read. OS metadata files (`.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`, `.localized`, `ehthumbs.db`) are skipped inside synced folders. Symlinks are skipped, including allowlisted entries that are themselves symlinks (for example, a `settings.json` symlinked from a dotfiles repo is not backed up).
 
 Never synced: credentials, `settings.local.json`, and machine-local state (projects, sessions, history, caches, todos, statsig, shell snapshots). Anything not in the allowlist is ignored.
 
