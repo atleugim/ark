@@ -75,6 +75,7 @@ async function main(): Promise<void> {
 
   let changes;
   let backupEntries: string[] = [];
+  let backupDir: string | undefined;
   if (command === "backup") {
     const savedIncludes = (await readIncludes(homedir, adapter.name)).map((item) => checkPath(item, "config include"));
     backupEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes, ...runIncludes]);
@@ -88,13 +89,15 @@ async function main(): Promise<void> {
       throw isErrno(err, "ENOENT") ? new Error(`Folder "${remote}" does not exist. Run "ark init <git-url>" first, and "ark backup" on the machine that has the config.`) : err;
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupDir = path.join(homedir, ".ark", "backups", adapter.name, stamp);
+    backupDir = path.join(homedir, ".ark", "backups", adapter.name, stamp);
     const entries = (await listTopLevel(remote)).filter((name) => !isBlocked(name, adapter.blocked));
     changes = await copyFiles(remote, local, entries, { dryRun, backupDir, transform: restoreTransform, exclude });
   }
 
   for (const change of changes) console.log(`${dryRun ? "would " : ""}${change.kind}: ${change.file}`);
   if (changes.length === 0) console.log("Nothing to sync.");
+  // Only updates and deletes replace existing local files, so only those leave something in backupDir.
+  if (backupDir && !dryRun && changes.some((change) => change.kind !== "new")) console.log(`Previous local files saved to ${backupDir}`);
 
   if (gitBacked && command === "backup") {
     // Deleted files are gone from disk, so listFiles misses them; add them so the commit records the removal.

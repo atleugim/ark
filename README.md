@@ -120,7 +120,7 @@ There is no conflict detection: the last backup wins. `backup` overwrites and de
 
 ## Backups
 
-Before `restore` overwrites or deletes an existing local file, the previous content is saved to `~/.ark/backups/<tool>/<timestamp>/<file>`.
+Before `restore` overwrites or deletes an existing local file, the previous content is saved to `~/.ark/backups/<tool>/<timestamp>/<file>`, and `restore` prints that folder (`Previous local files saved to <path>`) when it saved anything.
 
 `~/.ark/backups` is never cleaned up automatically. Each `restore` that prunes files adds a folder there, which can be large when it holds pruned local marketplace clones; delete old folders by hand.
 

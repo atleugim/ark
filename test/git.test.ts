@@ -351,9 +351,11 @@ test("restore deletes a stale local file after backing it up", opts, async (t) =
   assert.match(res.stdout, /delete: plugins\/cache\/p\/1\.0\/x/);
   await assert.rejects(fs.stat(path.join(claudeDir, "plugins", "cache", "p", "1.0", "x")));
   const stamps = await fs.readdir(path.join(home, ".ark", "backups", "claude"));
+  assert.match(res.stdout, new RegExp(`Previous local files saved to .*${stamps[0]}`));
   assert.equal(await fs.readFile(path.join(home, ".ark", "backups", "claude", stamps[0], "plugins", "cache", "p", "1.0", "x"), "utf8"), "old");
   const again = await runCli(["restore", "--dir", sync], claudeDir, home);
   assert.match(again.stdout, /Nothing to sync\./);
+  assert.doesNotMatch(again.stdout, /saved to/);
 });
 
 test("restore pulls repo entries outside the allowlist and skips blocked ones", opts, async (t) => {
