@@ -13,8 +13,11 @@ test("honors CLAUDE_CONFIG_DIR", () => {
 });
 
 test("allowlist excludes credentials and machine-local state", () => {
-  for (const name of [".credentials.json", "settings.local.json", "projects", "sessions", "history.jsonl", "todos", "statsig", "shell-snapshots"]) {
+  for (const name of claude.blocked) {
     assert.ok(!claude.allowlist.includes(name), name);
+  }
+  for (const name of [".credentials.json", "settings.local.json", "projects", "sessions", "history.jsonl", "todos", "statsig", "shell-snapshots"]) {
+    assert.ok(claude.blocked.includes(name), name);
   }
   assert.ok(claude.allowlist.includes("settings.json"));
 });

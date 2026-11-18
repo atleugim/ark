@@ -26,6 +26,7 @@ export const claude: ToolAdapter = {
   // Explicit allowlist: credentials, settings.local.json and machine state
   // (projects, sessions, history, caches, todos, statsig, shell snapshots) stay out.
   // Plugins: manifests plus installed copies; marketplace clones and catalog caches are re-fetchable.
+  blocked: [".credentials.json", "settings.local.json", "projects", "sessions", "history.jsonl", "todos", "statsig", "shell-snapshots", "ide", "file-history", "debug", "session-env", "telemetry"],
   allowlist: ["settings.json", "CLAUDE.md", "agents", "skills", "commands", "hooks", "plugins/installed_plugins.json", "plugins/known_marketplaces.json", "plugins/cache"],
   transform: (direction, file, data, home) => {
     if (!manifests.has(file.split(path.sep).join("/"))) return data;

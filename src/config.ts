@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isErrno } from "./sync.ts";
+import { isErrno, uniqueByKey } from "./sync.ts";
 
 export function configPath(homedir: string): string {
   return path.join(homedir, ".ark", "config.json");
@@ -28,8 +28,43 @@ export async function resolveRepoDir(opts: { flag?: string; homedir: string }): 
   return (await readSavedRepo(configPath(opts.homedir))) ?? defaultRepoDir(opts.homedir);
 }
 
-export async function saveRepoDir(homedir: string, repo: string): Promise<void> {
+// Whole config object, so writers keep keys they do not own; a missing file is an empty config.
+async function readConfig(homedir: string): Promise<Record<string, unknown>> {
+  try {
+    const data: unknown = JSON.parse(await fs.readFile(configPath(homedir), "utf8"));
+    return typeof data === "object" && data !== null && !Array.isArray(data) ? { ...data } : {};
+  } catch (err) {
+    if (!isErrno(err, "ENOENT")) throw err;
+    return {};
+  }
+}
+
+async function writeConfig(homedir: string, config: Record<string, unknown>): Promise<void> {
   const file = configPath(homedir);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify({ repo }, null, 2) + "\n");
+  await fs.writeFile(file, JSON.stringify(config, null, 2) + "\n");
+}
+
+function includesOf(config: Record<string, unknown>, tool: string): string[] {
+  const { include } = config;
+  if (typeof include !== "object" || include === null || !Object.hasOwn(include, tool)) return [];
+  const list: unknown = Object.getOwnPropertyDescriptor(include, tool)?.value;
+  return Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : [];
+}
+
+// Malformed values are skipped rather than failing every backup.
+export async function readIncludes(homedir: string, tool: string): Promise<string[]> {
+  return includesOf(await readConfig(homedir), tool);
+}
+
+export async function addIncludes(homedir: string, tool: string, added: readonly string[]): Promise<void> {
+  const config = await readConfig(homedir);
+  const { include } = config;
+  const others = typeof include === "object" && include !== null && !Array.isArray(include) ? include : {};
+  config.include = { ...others, [tool]: uniqueByKey([...includesOf(config, tool), ...added]) };
+  await writeConfig(homedir, config);
+}
+
+export async function saveRepoDir(homedir: string, repo: string): Promise<void> {
+  await writeConfig(homedir, { ...(await readConfig(homedir)), repo });
 }
