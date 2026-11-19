@@ -79,7 +79,8 @@ async function main(): Promise<void> {
   const savedIncludes = (await readIncludes(homedir, adapter.name)).map((item) => checkPath(item, "config include"));
   if (command === "backup") {
     backupEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes, ...runIncludes]);
-    changes = await copyFiles(local, remote, backupEntries, { dryRun, guardDest: true, transform: backupTransform, exclude });
+    const filter = await adapter.activeFilter?.(local);
+    changes = await copyFiles(local, remote, backupEntries, { dryRun, guardDest: true, transform: backupTransform, exclude, filter });
     if (runIncludes.length > 0 && !dryRun) {
       await addIncludes(homedir, adapter.name, runIncludes.map((item) => item.split(path.sep).join("/")));
     }
@@ -92,7 +93,9 @@ async function main(): Promise<void> {
     backupDir = path.join(homedir, ".ark", "backups", adapter.name, stamp);
     const entries = (await listTopLevel(remote)).filter((name) => !isBlocked(name, adapter.blocked));
     const pruneEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes]);
-    changes = await copyFiles(remote, local, entries, { dryRun, backupDir, transform: restoreTransform, exclude, pruneEntries });
+    // The repo manifest decides which plugin versions are live; the other versions in the repo stay there.
+    const filter = await adapter.activeFilter?.(remote);
+    changes = await copyFiles(remote, local, entries, { dryRun, backupDir, transform: restoreTransform, exclude, pruneEntries, filter });
   }
 
   for (const change of changes) console.log(`${dryRun ? "would " : ""}${change.kind}: ${change.file}`);

@@ -245,6 +245,37 @@ test("backup prunes files gone from the source and removes emptied dirs", async 
   assert.deepEqual(await copyFiles(local, remote, claude.allowlist, { dryRun: false, guardDest: true }), []);
 });
 
+const manifestFor = (root: string, version: string) =>
+  JSON.stringify({ plugins: { "p@m": [{ installPath: path.join(root, "plugins", "cache", "m", "p", version) }] } });
+
+test("backup copies only the active plugin version and prunes the stale one", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "plugins/installed_plugins.json", manifestFor(local, "0.6.16"));
+  await write(local, "plugins/cache/m/p/0.6.14/x", "old");
+  await write(local, "plugins/cache/m/p/0.6.16/x", "new");
+  await write(remote, "plugins/cache/m/p/0.6.14/x", "old");
+  const filter = await claude.activeFilter?.(local);
+  const changes = await copyFiles(local, remote, claude.allowlist, { dryRun: false, guardDest: true, filter });
+  assert.ok(changes.some((c) => c.kind === "delete" && c.file === path.join("plugins", "cache", "m", "p", "0.6.14", "x")));
+  assert.deepEqual(await fs.readdir(path.join(remote, "plugins", "cache", "m", "p")), ["0.6.16"]);
+  assert.deepEqual(await copyFiles(local, remote, claude.allowlist, { dryRun: false, guardDest: true, filter }), []);
+});
+
+test("restore skips non-active versions from a placeholder manifest and dry-run changes nothing", async (t) => {
+  const remote = await tmp(t);
+  const local = await tmp(t);
+  await write(remote, "plugins/installed_plugins.json", manifestFor("CLAUDE_HOME", "0.6.16"));
+  await write(remote, "plugins/cache/m/p/0.6.14/x", "old");
+  await write(remote, "plugins/cache/m/p/0.6.16/x", "new");
+  const filter = await claude.activeFilter?.(remote);
+  const dry = await copyFiles(remote, local, ["plugins"], { dryRun: true, filter });
+  assert.ok(!dry.some((c) => c.file.includes("0.6.14")));
+  await assert.rejects(fs.stat(path.join(local, "plugins")));
+  await copyFiles(remote, local, ["plugins"], { dryRun: false, filter });
+  assert.deepEqual(await fs.readdir(path.join(local, "plugins", "cache", "m", "p")), ["0.6.16"]);
+});
+
 test("restore saves a pruned local file to the backup dir first", async (t) => {
   const remote = await tmp(t);
   const local = await tmp(t);

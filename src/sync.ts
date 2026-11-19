@@ -123,6 +123,12 @@ async function readIfExists(file: string): Promise<Buffer | undefined> {
   }
 }
 
+const listSource = async (
+  from: string,
+  entries: readonly string[],
+  opts: { exclude?: readonly string[]; filter?: (file: string) => boolean },
+) => (await listFiles(from, entries, opts.exclude)).filter(opts.filter ?? (() => true));
+
 export async function copyFiles(
   from: string,
   to: string,
@@ -139,10 +145,12 @@ export async function copyFiles(
     exclude?: readonly string[];
     // Restore copies everything in the repo but only prunes what backup would upload, so local files backup never syncs are left alone.
     pruneEntries?: readonly string[];
+    // Source files failing this are treated as absent: not copied, and pruned from the destination.
+    filter?: (file: string) => boolean;
   },
 ): Promise<Change[]> {
   const changes: Change[] = [];
-  for (const file of await listFiles(from, allowlist, opts.exclude)) {
+  for (const file of await listSource(from, allowlist, opts)) {
     let dest = path.join(to, file);
     if (opts.guardDest) await assertNoSymlink(to, file);
     const [rawData, destData] = await Promise.all([fs.readFile(path.join(from, file)), readIfExists(dest)]);
@@ -198,7 +206,7 @@ async function prune(
   from: string,
   to: string,
   allowlist: readonly string[],
-  opts: { dryRun: boolean; backupDir?: string; guardDest?: boolean; exclude?: readonly string[] },
+  opts: { dryRun: boolean; backupDir?: string; guardDest?: boolean; exclude?: readonly string[]; filter?: (file: string) => boolean },
   changes: Change[],
 ): Promise<void> {
   for (const entry of allowlist) {
@@ -206,7 +214,7 @@ async function prune(
     const stat = await statEntry(from, item);
     // A missing or symlinked source entry says nothing about what should exist.
     if (!stat?.isFile() && !stat?.isDirectory()) continue;
-    const kept = new Set((await listFiles(from, [item], opts.exclude)).map(pathKey));
+    const kept = new Set((await listSource(from, [item], opts)).map(pathKey));
     for (const file of await listFiles(to, [item], opts.exclude)) {
       if (kept.has(pathKey(file))) continue;
       if (opts.guardDest) await assertNoSymlink(to, file);
