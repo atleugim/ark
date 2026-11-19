@@ -326,6 +326,39 @@ test("backup commits the deletion of a file removed locally", opts, async (t) =>
   assert.equal(git(sync, "rev-list", "--count", "HEAD"), "2");
 });
 
+test("backup uploads only the version installPath points to and commits the stale deletion", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(sync, "claude", "plugins", "cache", "m", "p", "0.6.14", "x"), "old");
+  git(sync, "add", "-A");
+  git(sync, "commit", "-q", "-m", "seed");
+  const active = path.join(claudeDir, "plugins", "cache", "m", "p", "0.6.16");
+  await writeFile(path.join(claudeDir, "plugins", "installed_plugins.json"), JSON.stringify({ plugins: { "p@m": [{ installPath: active }] } }));
+  await writeFile(path.join(claudeDir, "plugins", "cache", "m", "p", "0.6.14", "x"), "old");
+  await writeFile(path.join(active, "x"), "new");
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /delete: plugins\/cache\/m\/p\/0\.6\.14\/x/);
+  assert.deepEqual(await fs.readdir(path.join(sync, "claude", "plugins", "cache", "m", "p")), ["0.6.16"]);
+  assert.match(git(sync, "show", "--name-status", "--format=", "HEAD"), /^D\tclaude\/plugins\/cache\/m\/p\/0\.6\.14\/x$/m);
+  assert.match((await runCli(["backup", "--dir", sync], claudeDir, home)).stdout, /Nothing to sync\./);
+});
+
+test("restore brings only the active version and dry-run changes nothing", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const stored = JSON.stringify({ plugins: { "p@m": [{ installPath: "CLAUDE_HOME/plugins/cache/m/p/0.6.16" }] } });
+  await writeFile(path.join(sync, "claude", "plugins", "installed_plugins.json"), stored);
+  await writeFile(path.join(sync, "claude", "plugins", "cache", "m", "p", "0.6.14", "x"), "old");
+  await writeFile(path.join(sync, "claude", "plugins", "cache", "m", "p", "0.6.16", "x"), "new");
+  const dry = await runCli(["restore", "--dir", sync, "--dry-run"], claudeDir, home);
+  assert.equal(dry.code, 0, dry.stderr);
+  assert.doesNotMatch(dry.stdout, /0\.6\.14/);
+  await assert.rejects(fs.stat(path.join(claudeDir, "plugins")));
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.deepEqual(await fs.readdir(path.join(claudeDir, "plugins", "cache", "m", "p")), ["0.6.16"]);
+});
+
 test("dry-run backup reports deletions and changes nothing", opts, async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   await initRepo(sync);
