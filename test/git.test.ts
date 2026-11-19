@@ -387,15 +387,57 @@ test("restore skips blocked names that differ only by case or trailing dots", op
   assert.equal(await fs.readFile(path.join(claudeDir, ".credentials.json"), "utf8"), "mine");
 });
 
-test("restore prunes inside a non-allowlisted repo entry", opts, async (t) => {
+test("restore copies a repo-only entry but never prunes inside it", opts, async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   await writeFile(path.join(sync, "claude", "rules", "a.md"), "rule");
-  await writeFile(path.join(claudeDir, "rules", "a.md"), "rule");
-  await writeFile(path.join(claudeDir, "rules", "gone.md"), "old");
+  await writeFile(path.join(claudeDir, "rules", "gone.md"), "local");
   const res = await runCli(["restore", "--dir", sync], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
-  assert.match(res.stdout, /delete: rules\/gone\.md/);
-  await assert.rejects(fs.stat(path.join(claudeDir, "rules", "gone.md")));
+  assert.equal(await fs.readFile(path.join(claudeDir, "rules", "a.md"), "utf8"), "rule");
+  assert.equal(await fs.readFile(path.join(claudeDir, "rules", "gone.md"), "utf8"), "local");
+  assert.doesNotMatch(res.stdout, /delete:/);
+});
+
+test("restore leaves local files outside the paths backup syncs, even in a shared top-level folder", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "claude", "plugins", "installed_plugins.json"), "{}");
+  await writeFile(path.join(claudeDir, "plugins", "marketplaces", "m", "a"), "clone");
+  await writeFile(path.join(claudeDir, "plugins", "other.txt"), "local");
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.equal(await fs.readFile(path.join(claudeDir, "plugins", "marketplaces", "m", "a"), "utf8"), "clone");
+  assert.equal(await fs.readFile(path.join(claudeDir, "plugins", "other.txt"), "utf8"), "local");
+  assert.doesNotMatch(res.stdout, /delete:/);
+});
+
+test("restore prunes inside a saved include", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(home, ".ark", "config.json"), JSON.stringify({ include: { claude: ["notes"] } }));
+  await writeFile(path.join(sync, "claude", "notes", "a.md"), "note");
+  await writeFile(path.join(claudeDir, "notes", "gone.md"), "old");
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /delete: notes\/gone\.md/);
+  await assert.rejects(fs.stat(path.join(claudeDir, "notes", "gone.md")));
+  assert.equal(await fs.readFile(path.join(claudeDir, "notes", "a.md"), "utf8"), "note");
+});
+
+test("restore fails on an invalid or blocked saved include and deletes nothing", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "claude", "skills", "a.md"), "skill");
+  const stale = path.join(claudeDir, "skills", "gone.md");
+  const outside = path.join(claudeDir, "..", "x", "f");
+  await writeFile(stale, "old");
+  await writeFile(outside, "keep");
+  for (const include of ["projects", "../x"]) {
+    await writeFile(path.join(home, ".ark", "config.json"), JSON.stringify({ include: { claude: [include] } }));
+    const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+    assert.notEqual(res.code, 0, include);
+    assert.match(res.stderr, /config include/, include);
+    assert.equal(await fs.readFile(stale, "utf8"), "old");
+    assert.equal(await fs.readFile(outside, "utf8"), "keep");
+    await assert.rejects(fs.stat(path.join(claudeDir, "skills", "a.md")));
+  }
 });
 
 test("backup --exclude skips and keeps the excluded repo copy, without touching config", opts, async (t) => {
