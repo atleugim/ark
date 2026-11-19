@@ -137,6 +137,8 @@ export async function copyFiles(
     transform?: (file: string, data: Buffer) => Buffer;
     // Paths (from normalizeUserPath) that are neither copied nor pruned.
     exclude?: readonly string[];
+    // Restore copies everything in the repo but only prunes what backup would upload, so local files backup never syncs are left alone.
+    pruneEntries?: readonly string[];
   },
 ): Promise<Change[]> {
   const changes: Change[] = [];
@@ -167,7 +169,7 @@ export async function copyFiles(
       throw err;
     }
   }
-  await prune(from, to, allowlist, opts, changes);
+  await prune(from, to, opts.pruneEntries ?? allowlist, opts, changes);
   return changes;
 }
 

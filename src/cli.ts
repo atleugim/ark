@@ -76,8 +76,8 @@ async function main(): Promise<void> {
   let changes;
   let backupEntries: string[] = [];
   let backupDir: string | undefined;
+  const savedIncludes = (await readIncludes(homedir, adapter.name)).map((item) => checkPath(item, "config include"));
   if (command === "backup") {
-    const savedIncludes = (await readIncludes(homedir, adapter.name)).map((item) => checkPath(item, "config include"));
     backupEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes, ...runIncludes]);
     changes = await copyFiles(local, remote, backupEntries, { dryRun, guardDest: true, transform: backupTransform, exclude });
     if (runIncludes.length > 0 && !dryRun) {
@@ -91,7 +91,8 @@ async function main(): Promise<void> {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     backupDir = path.join(homedir, ".ark", "backups", adapter.name, stamp);
     const entries = (await listTopLevel(remote)).filter((name) => !isBlocked(name, adapter.blocked));
-    changes = await copyFiles(remote, local, entries, { dryRun, backupDir, transform: restoreTransform, exclude });
+    const pruneEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes]);
+    changes = await copyFiles(remote, local, entries, { dryRun, backupDir, transform: restoreTransform, exclude, pruneEntries });
   }
 
   for (const change of changes) console.log(`${dryRun ? "would " : ""}${change.kind}: ${change.file}`);
