@@ -885,3 +885,277 @@ test("a mis-cased --include overlapping an adapter entry keeps the on-disk casin
   assert.match(tracked, /claude\/skills\/s\.md/);
   assert.doesNotMatch(tracked, /Skills/);
 });
+
+async function linkSkill(claudeDir: string, name: string, target: string): Promise<void> {
+  const link = path.join(claudeDir, "skills", name);
+  await fs.mkdir(path.dirname(link), { recursive: true });
+  await fs.symlink(path.relative(path.dirname(link), target), link);
+}
+
+test("backup records skill symlinks into the agents folder in links.json", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "b", "SKILL.md"), "b");
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "zeta", path.join(home, ".agents", "skills", "b"));
+  await linkSkill(claudeDir, "alpha", path.join(home, ".agents", "skills", "a"));
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^new: links\.json$/m);
+  assert.equal(
+    await fs.readFile(path.join(sync, "links.json"), "utf8"),
+    JSON.stringify({ claude: [{ link: "alpha", target: "a" }, { link: "zeta", target: "b" }] }, null, 2) + "\n",
+  );
+  assert.match(git(sync, "show", "--name-only", "--format=", "HEAD"), /^links\.json$/m);
+  await assert.rejects(fs.stat(path.join(sync, "claude", "skills", "alpha")), { code: "ENOENT" });
+
+  const again = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.match(again.stdout, /Nothing to sync\./);
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "1");
+});
+
+test("backup ignores foreign, dangling and nested skill symlinks", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, "elsewhere", "x", "f"), "x");
+  await writeFile(path.join(home, ".agents", "skills", "g", "deep", "f"), "x");
+  await linkSkill(claudeDir, "foreign", path.join(home, "elsewhere", "x"));
+  await linkSkill(claudeDir, "dangling", path.join(home, ".agents", "skills", "missing"));
+  await linkSkill(claudeDir, "nested", path.join(home, ".agents", "skills", "g", "deep"));
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  await assert.rejects(fs.stat(path.join(sync, "links.json")), { code: "ENOENT" });
+});
+
+test("dry-run backup reports links.json without writing it", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "a", path.join(home, ".agents", "skills", "a"));
+  const res = await runCli(["backup", "--dir", sync, "--dry-run"], claudeDir, home);
+  assert.match(res.stdout, /^would new: links\.json$/m);
+  assert.match(res.stdout, /^would commit$/m);
+  await assert.rejects(fs.stat(path.join(sync, "links.json")), { code: "ENOENT" });
+});
+
+test("backup rewrites an existing links.json when the last link is gone", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "a", path.join(home, ".agents", "skills", "a"));
+  await runCli(["backup", "--dir", sync], claudeDir, home);
+  await fs.rm(path.join(claudeDir, "skills", "a"));
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.match(res.stdout, /^update: links\.json$/m);
+  assert.equal(await fs.readFile(path.join(sync, "links.json"), "utf8"), '{\n  "claude": []\n}\n');
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "2");
+});
+
+test("Copilot backup never touches links.json", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "a", path.join(home, ".agents", "skills", "a"));
+  const res = await runCli(["backup", "--dir", sync, "--tool", "copilot"], claudeDir, home, { COPILOT_HOME: path.join(home, "copilot-local") });
+  assert.equal(res.code, 0, res.stderr);
+  await assert.rejects(fs.stat(path.join(sync, "links.json")), { code: "ENOENT" });
+});
+
+test("backup refuses to write links.json through a symlink", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "a", path.join(home, ".agents", "skills", "a"));
+  const outside = path.join(home, "outside.json");
+  await fs.symlink(outside, path.join(sync, "links.json"));
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.notEqual(res.code, 0);
+  assert.match(res.stderr, /Refusing to write .*links\.json.*symlink/);
+  await assert.rejects(fs.stat(outside), { code: "ENOENT" });
+});
+
+test("backup keeps other tools' keys in an existing links.json", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  const other = [{ link: "x", target: "y" }];
+  await writeFile(path.join(sync, "links.json"), JSON.stringify({ other }, null, 2) + "\n");
+  git(sync, "add", "-A");
+  git(sync, "commit", "-m", "seed");
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "a", path.join(home, ".agents", "skills", "a"));
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.deepEqual(JSON.parse(git(sync, "show", "HEAD:links.json")), { other, claude: [{ link: "a", target: "a" }] });
+});
+
+test("backup refuses a malformed links.json and leaves it unchanged", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "a", path.join(home, ".agents", "skills", "a"));
+  await writeFile(path.join(sync, "links.json"), "{not json");
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.notEqual(res.code, 0);
+  assert.match(res.stderr, /links\.json/);
+  assert.equal(await fs.readFile(path.join(sync, "links.json"), "utf8"), "{not json");
+});
+
+async function restoreSetup(t: TestContext, manifest: string | undefined, skills = ["a"]) {
+  const ctx = await setup(t);
+  await fs.rm(ctx.claudeDir, { recursive: true });
+  await writeFile(path.join(ctx.sync, "claude", "CLAUDE.md"), "hello");
+  for (const name of skills) await writeFile(path.join(ctx.sync, "agents", "skills", name, "SKILL.md"), name);
+  if (manifest !== undefined) await writeFile(path.join(ctx.sync, "links.json"), manifest);
+  return { ...ctx, skills: path.join(ctx.claudeDir, "skills"), agents: path.join(ctx.home, ".agents", "skills") };
+}
+
+const manifestOf = (...links: unknown[]) => JSON.stringify({ claude: links });
+
+test("backup then restore into a fresh home recreates the skill symlink", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "alias", path.join(home, ".agents", "skills", "a"));
+  assert.equal((await runCli(["backup", "--dir", sync], claudeDir, home)).code, 0);
+
+  const home2 = await tmp(t);
+  const claude2 = path.join(home2, "claude-local");
+  // Copy without .git so restore does not try to pull from a remote.
+  const plain = path.join(home2, "plain");
+  await fs.cp(sync, plain, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
+  const res = await runCli(["restore", "--dir", plain], claude2, home2);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^link: skills[\\/]alias$/m);
+  const link = path.join(claude2, "skills", "alias");
+  assert.equal(await fs.readlink(link), path.relative(path.dirname(link), path.join(home2, ".agents", "skills", "a")));
+  assert.equal(await fs.readFile(path.join(link, "SKILL.md"), "utf8"), "a");
+  await assert.rejects(fs.stat(path.join(claude2, "links.json")), { code: "ENOENT" });
+
+  const again = await runCli(["restore", "--dir", plain], claude2, home2);
+  assert.doesNotMatch(again.stdout, /link:/);
+  assert.equal(again.stderr, "");
+});
+
+test("restore leaves a real directory at the link path untouched and warns", opts, async (t) => {
+  const { home, claudeDir, sync, skills } = await restoreSetup(t, manifestOf({ link: "alias", target: "a" }));
+  await writeFile(path.join(skills, "alias", "mine.md"), "mine");
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stderr, /alias/);
+  assert.doesNotMatch(res.stdout, /link:/);
+  assert.equal(await fs.readFile(path.join(skills, "alias", "mine.md"), "utf8"), "mine");
+});
+
+test("restore leaves a symlink pointing elsewhere untouched", opts, async (t) => {
+  const { home, claudeDir, sync, skills } = await restoreSetup(t, manifestOf({ link: "alias", target: "a" }), ["a", "b"]);
+  await linkSkill(claudeDir, "alias", path.join(home, ".agents", "skills", "b"));
+  const before = await fs.readlink(path.join(skills, "alias"));
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stderr, /alias/);
+  assert.equal(await fs.readlink(path.join(skills, "alias")), before);
+});
+
+test("restore dry-run prints would link and creates nothing", opts, async (t) => {
+  const { home, claudeDir, sync, skills } = await restoreSetup(t, manifestOf({ link: "alias", target: "a" }));
+  const res = await runCli(["restore", "--dir", sync, "--dry-run"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^would link: skills[\\/]alias$/m);
+  await assert.rejects(fs.lstat(path.join(skills, "alias")), { code: "ENOENT" });
+});
+
+test("restore skips invalid link names and writes nothing outside skills", opts, async (t) => {
+  const bad = ["..", "a/b", ".", "", "a\\b"].map((link) => ({ link, target: "a" }));
+  const { home, claudeDir, sync, skills } = await restoreSetup(t, manifestOf(...bad, { link: 5, target: "a" }, { link: "x", target: "../a" }));
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.doesNotMatch(res.stdout, /link:/);
+  assert.ok(res.stderr.length > 0);
+  assert.deepEqual(await fs.readdir(skills).catch(() => []), []);
+  assert.deepEqual((await fs.readdir(claudeDir)).sort(), ["CLAUDE.md"]);
+});
+
+test("restore skips a link whose target is missing", opts, async (t) => {
+  const { home, claudeDir, sync, skills } = await restoreSetup(t, manifestOf({ link: "alias", target: "gone" }));
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stderr, /gone/);
+  await assert.rejects(fs.lstat(path.join(skills, "alias")), { code: "ENOENT" });
+});
+
+test("restore skips all links when the skills folder is a symlink", opts, async (t) => {
+  const { home, claudeDir, sync, skills } = await restoreSetup(t, manifestOf({ link: "alias", target: "a" }));
+  const elsewhere = path.join(home, "elsewhere");
+  await fs.mkdir(elsewhere);
+  await fs.mkdir(claudeDir);
+  await fs.symlink(elsewhere, skills);
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stderr, /skills/);
+  assert.deepEqual(await fs.readdir(elsewhere), []);
+});
+
+test("restore fails clearly on a malformed links.json", opts, async (t) => {
+  for (const manifest of ["{not json", '{"claude": "x"}', "[]"]) {
+    const { home, claudeDir, sync } = await restoreSetup(t, manifest);
+    const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+    assert.notEqual(res.code, 0, manifest);
+    assert.match(res.stderr, /links\.json/);
+  }
+});
+
+test("Copilot restore ignores links.json", opts, async (t) => {
+  const { home, claudeDir, sync, skills } = await restoreSetup(t, "{not json");
+  await writeFile(path.join(sync, "copilot", "x.md"), "x");
+  const res = await runCli(["restore", "--dir", sync, "--tool", "copilot"], claudeDir, home, { COPILOT_HOME: path.join(home, "copilot-local") });
+  assert.equal(res.code, 0, res.stderr);
+  await assert.rejects(fs.lstat(skills), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(home, "copilot-local", "links.json")), { code: "ENOENT" });
+});
+
+test("restore builds a working link when the Claude home is a symlink", opts, async (t) => {
+  const { home, sync } = await restoreSetup(t, manifestOf({ link: "alias", target: "a" }));
+  const real = path.join(home, "dotfiles", "deep", "claude");
+  await fs.mkdir(real, { recursive: true });
+  const claudeLink = path.join(home, "claude-link");
+  await fs.symlink(real, claudeLink);
+  const res = await runCli(["restore", "--dir", sync], claudeLink, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^link: skills[\\/]alias$/m);
+  assert.equal(await fs.readFile(path.join(real, "skills", "alias", "SKILL.md"), "utf8"), "a");
+});
+
+test("restore stays silent for a correct absolute link", opts, async (t) => {
+  const { home, claudeDir, sync, skills, agents } = await restoreSetup(t, manifestOf({ link: "alias", target: "a" }));
+  await fs.mkdir(agents, { recursive: true });
+  await fs.mkdir(skills, { recursive: true });
+  await fs.symlink(path.join(agents, "a"), path.join(skills, "alias"), "dir");
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.equal(res.stderr, "");
+  assert.doesNotMatch(res.stdout, /link:/);
+});
+
+test("restore that only creates links does not print Nothing to sync", opts, async (t) => {
+  const { home, claudeDir, sync } = await restoreSetup(t, manifestOf({ link: "alias", target: "a" }));
+  assert.equal((await runCli(["restore", "--dir", sync], claudeDir, home)).code, 0);
+  await fs.rm(path.join(claudeDir, "skills", "alias"));
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^link: skills[\\/]alias$/m);
+  assert.doesNotMatch(res.stdout, /new:|Nothing to sync/);
+});
+
+test("restore warns and continues when the skills folder is read-only", opts, async (t) => {
+  if (process.platform === "win32" || process.getuid?.() === 0) return t.skip("needs permission checks");
+  const { home, claudeDir, sync, skills } = await restoreSetup(t, manifestOf({ link: "alias", target: "a" }));
+  await fs.mkdir(skills, { recursive: true });
+  await fs.chmod(skills, 0o555);
+  try {
+    const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+    assert.equal(res.code, 0, res.stderr);
+    assert.match(res.stderr, /not allowed to create symlinks/);
+  } finally {
+    await fs.chmod(skills, 0o755);
+  }
+});

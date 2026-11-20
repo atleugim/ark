@@ -10,4 +10,6 @@ export interface ToolAdapter {
   transform?(direction: "backup" | "restore", file: string, data: Buffer, home: string): Buffer;
   // Optional filter over files (relative to the home dir): true for files active according to the manifest under `home`; undefined means no filtering.
   activeFilter?(home: string): Promise<((file: string) => boolean) | undefined>;
+  // Opt-in to skill symlink portability (links.json); `dir` is the skills folder relative to the home dir.
+  skillLinks?: { dir: string };
 }
