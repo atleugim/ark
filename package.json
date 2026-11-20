@@ -1,6 +1,6 @@
 {
   "name": "@atleugim/ark",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Back up and restore AI agent configuration (Claude Code and GitHub Copilot CLI), extensible to other AI tools.",
   "type": "module",
