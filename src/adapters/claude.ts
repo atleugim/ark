@@ -61,6 +61,7 @@ const readActiveVersions = async (root: string) => {
 
 export const claude: ToolAdapter = {
   name: "claude",
+  skillLinks: { dir: "skills" },
   // os.homedir() resolves to %USERPROFILE% on Windows.
   resolveHome: (env, homedir) => env.CLAUDE_CONFIG_DIR ? path.resolve(env.CLAUDE_CONFIG_DIR) : path.join(homedir, ".claude"),
   // Explicit allowlist: credentials, settings.local.json and machine state

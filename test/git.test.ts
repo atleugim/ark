@@ -974,6 +974,32 @@ test("backup refuses to write links.json through a symlink", opts, async (t) => 
   await assert.rejects(fs.stat(outside), { code: "ENOENT" });
 });
 
+test("backup keeps other tools' keys in an existing links.json", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  const other = [{ link: "x", target: "y" }];
+  await writeFile(path.join(sync, "links.json"), JSON.stringify({ other }, null, 2) + "\n");
+  git(sync, "add", "-A");
+  git(sync, "commit", "-m", "seed");
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "a", path.join(home, ".agents", "skills", "a"));
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.deepEqual(JSON.parse(git(sync, "show", "HEAD:links.json")), { other, claude: [{ link: "a", target: "a" }] });
+});
+
+test("backup refuses a malformed links.json and leaves it unchanged", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "a");
+  await linkSkill(claudeDir, "a", path.join(home, ".agents", "skills", "a"));
+  await writeFile(path.join(sync, "links.json"), "{not json");
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.notEqual(res.code, 0);
+  assert.match(res.stderr, /links\.json/);
+  assert.equal(await fs.readFile(path.join(sync, "links.json"), "utf8"), "{not json");
+});
+
 async function restoreSetup(t: TestContext, manifest: string | undefined, skills = ["a"]) {
   const ctx = await setup(t);
   await fs.rm(ctx.claudeDir, { recursive: true });

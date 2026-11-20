@@ -68,6 +68,7 @@ async function main(): Promise<void> {
   });
   const local = adapter.resolveHome(process.env, homedir);
   const remote = path.join(syncDir, adapter.name);
+  const skillTarget = adapter.skillLinks && { tool: adapter.name, home: local, dir: adapter.skillLinks.dir };
 
   const gitBacked = await isGitBacked(syncDir);
 
@@ -102,9 +103,9 @@ async function main(): Promise<void> {
       changes.push(...result.changes.map((change) => ({ ...change, file: toRepoPath(globalAdapter, change.file) })));
       backupPaths.push(...result.paths);
     }
-    if (adapter.name === "claude") {
+    if (skillTarget) {
       const agentsHome = globalAdapters.find((item) => item.name === "agents")!.resolveHome(process.env, homedir);
-      const change = await writeLinksManifest(syncDir, await scanSkillLinks(local, agentsHome), dryRun);
+      const change = await writeLinksManifest(syncDir, adapter.name, await scanSkillLinks(skillTarget, agentsHome), dryRun);
       if (change) changes.push(change);
       if (gitBacked) backupPaths.push(LINKS_FILE);
     }
@@ -137,9 +138,9 @@ async function main(): Promise<void> {
       changes.push(...copied.map((change) => ({ ...change, file: toRepoPath(globalAdapter, change.file) })));
     }
     // After the ~/.agents restore, so the link targets exist.
-    if (adapter.name === "claude") {
+    if (skillTarget) {
       const agentsHome = globalAdapters.find((item) => item.name === "agents")!.resolveHome(process.env, homedir);
-      changes.push(...(await restoreSkillLinks(syncDir, local, agentsHome, dryRun)));
+      changes.push(...(await restoreSkillLinks(syncDir, skillTarget, agentsHome, dryRun)));
     }
   }
 
