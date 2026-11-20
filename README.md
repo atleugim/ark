@@ -42,21 +42,22 @@ ark restore
 
 ```sh
 ark init <git-url>     # one-time: clone the private repo into ~/.ark/repo
-ark backup             # local config -> ~/.ark/repo/claude, commit, push
+ark backup             # local config -> ~/.ark/repo/claude and ~/.ark/repo/agents, commit, push
 ark backup --dry-run   # list changes without writing anything
-ark restore            # git pull --ff-only, then ~/.ark/repo/claude -> local config (also prunes, see Deletions)
+ark restore            # git pull --ff-only, then repo config -> local config (also prunes, see Deletions)
 ark restore --dry-run  # list changes without writing anything
 ark backup --include output-styles --include notes  # also back up these paths, and remember them
 ark backup --exclude skills/scratch                 # skip this path for this run only
 ark restore --exclude skills/scratch                # skip this path for this run only
 ```
 
+- `backup` and `restore` also sync `~/.agents/skills/` and `~/.agents/.skill-lock.json` with `<repo>/agents`; these changes are reported with an `agents/` prefix.
 - `backup` copies the local config into `<repo>/<tool>`. It fails with a hint to run `ark init` if the repo folder does not exist.
 - `restore` copies `<repo>/<tool>` into the local config and deletes local files, inside the paths `backup` syncs, that are absent from the repo (see Deletions). It fails if the repo or `<repo>/<tool>` does not exist (run `ark init`, and `ark backup` on the machine that has the config).
-- `--tool <name>`: tool adapter to use (default `claude`).
+- `--tool <name>`: select the tool-specific adapter (default `claude`); the global `agents` sync always runs and is not selectable.
 - `--dir <path>`: use this folder instead of `~/.ark/repo` (mainly for tests).
-- `--include <path>`: `backup` only; add a file or folder to the backup and save it in `~/.ark/config.json` for later runs. Repeat it for several paths. `restore --include` is rejected. The path does not need to exist locally. Nothing is saved with `--dry-run`.
-- `--exclude <path>`: `backup` and `restore`; skip a file or folder for this run only (never saved). Repeat it for several paths.
+- `--include <path>`: `backup` only; add a file or folder from the selected tool's config to the backup and save it in `~/.ark/config.json` for later runs. Repeat it for several paths. `restore --include` is rejected. The path does not need to exist locally. Nothing is saved with `--dry-run`. It does not apply to `~/.agents`.
+- `--exclude <path>`: `backup` and `restore`; skip a file or folder in the selected tool's config for this run only (never saved). Repeat it for several paths. It does not apply to `~/.agents`.
 - `--dry-run`: print what would change (`would new: <file>` / `would update: <file>` / `would delete: <file>`) without writing files.
 
 The local Claude config directory is `~/.claude`, or `CLAUDE_CONFIG_DIR` if set.
@@ -85,12 +86,16 @@ pnpm build
 The repo folder is a git repository, so `backup` and `restore` use git.
 
 - `restore` runs `git pull --ff-only` in the repo first, then copies. If the pull fails (diverged history, no remote, network), it stops with git's error and copies nothing.
-- `backup` copies, then commits any changes as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). Only the allowlist and your includes under `<repo>/<tool>` are committed (including removals of files that `backup` deleted); other files in the folder are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
+- `backup` copies, then commits any changes as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). One commit includes the selected tool's allowlist and includes under `<repo>/<tool>` (including removals of files that `backup` deleted) plus changes under `<repo>/agents/skills/` and `<repo>/agents/.skill-lock.json`. The subject remains `sync(<tool>): ...`; other files in `<repo>/<tool>` are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
 - `--dry-run` runs no git writes. `backup` prints `would commit` if there would be changes; `restore` skips the git pull.
 - Your existing git identity is used. The repo is trusted: git runs its hooks and config. Conflicts are never resolved automatically: if a pull or push fails, resolve it by hand with git in the repo, then run the command again.
 - A plain folder at the repo path (no `.git`) still works for `backup` and `restore` without git.
 
 ## What is synced
+
+### Global agent configuration
+
+Every `backup` and `restore` also syncs `~/.agents/skills/` and `~/.agents/.skill-lock.json` with `<repo>/agents/`. A missing `~/.agents` source or `<repo>/agents` repo directory is skipped; symlinked source entries are skipped. Backup syncs only these two entries. Restore copies entries present in `<repo>/agents/`, but prunes local files only inside `skills/` and `.skill-lock.json`; other local files are not pruned (though matching repo entries can be copied over them). `--exclude` is not applied to this sync.
 
 `backup` syncs this allowlist plus any includes (saved ones and those passed with `--include` in this run), minus any `--exclude`. Paths are relative to the Claude config directory:
 
@@ -122,6 +127,8 @@ There is no conflict detection: the last backup wins. `backup` overwrites and de
 
 Before `restore` overwrites or deletes an existing local file, the previous content is saved to `~/.ark/backups/<tool>/<timestamp>/<file>`, and `restore` prints that folder (`Previous local files saved to <path>`) when it saved anything.
 
+For the global agent configuration, previous files are saved under `~/.ark/backups/agents/<timestamp>/`.
+
 `~/.ark/backups` is never cleaned up automatically. Each `restore` that replaces or deletes local files adds a folder there; delete old folders by hand.
 
 ## Safety notes
@@ -142,6 +149,8 @@ Implement the `ToolAdapter` interface from `src/adapters/types.ts`:
 - `activeFilter?(home)`: optional, async; resolves to a predicate over files (relative to the root) that returns `true` for the files to sync, or to `undefined` for no filtering. Used by the Claude adapter to sync only the active plugin version.
 
 Then register the adapter in `src/adapters/index.ts`. See `src/adapters/claude.ts` for an example.
+
+Adapters that should always run alongside the selected tool, and must not be selectable with `--tool`, belong in `globalAdapters` in `src/adapters/index.ts`.
 
 ## License
 

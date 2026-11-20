@@ -3,13 +3,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { adapters } from "./adapters/index.ts";
+import { adapters, globalAdapters } from "./adapters/index.ts";
+import type { ToolAdapter } from "./adapters/types.ts";
 import { addIncludes, readIncludes, resolveRepoDir, saveRepoDir } from "./config.ts";
 import { commitAndPush, gitClone, gitPull, hasChanges, isGitBacked } from "./git.ts";
 import { copyFiles, isBlocked, isErrno, listFiles, listTopLevel, normalizeUserPath, uniqueByKey } from "./sync.ts";
 
 const usage =
-  "Usage: ark init <git-url>\n       ark <backup|restore> [--tool claude] [--dry-run] [--include <path>]... [--exclude <path>]...\n       ark -h|--help\nThe repo lives in ~/.ark/repo (--dir <path> overrides it). --include (backup only) adds a file or folder (relative to the tool folder) to the backup and saves it in ~/.ark/config.json for later runs; repeat it for several. --exclude skips a file or folder (relative to the tool folder) for this run only; repeat it for several. Files removed from a synced folder are removed on the other side too (restore saves them to ~/.ark/backups first).";
+  "Usage: ark init <git-url>\n       ark <backup|restore> [--tool claude] [--dry-run] [--include <path>]... [--exclude <path>]...\n       ark -h|--help\nThe repo lives in ~/.ark/repo (--dir <path> overrides it). ~/.agents (skills/ and .skill-lock.json) is also synced on every backup/restore. --include (backup only) adds a file or folder (relative to the selected tool's folder) to the backup and saves it in ~/.ark/config.json for later runs; repeat it for several. --exclude skips a file or folder (relative to the selected tool's folder) for this run only; repeat it for several. Files removed from a synced folder are removed on the other side too (restore saves them to ~/.ark/backups first).";
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -72,15 +73,34 @@ async function main(): Promise<void> {
   const { transform: adapterTransform } = adapter;
   const backupTransform = adapterTransform && ((file: string, data: Buffer) => adapterTransform("backup", file, data, local));
   const restoreTransform = adapterTransform && ((file: string, data: Buffer) => adapterTransform("restore", file, data, local));
+  const toRepoPath = (target: ToolAdapter, file: string) => path.posix.join(target.name, file.split(path.sep).join("/"));
 
   let changes;
-  let backupEntries: string[] = [];
-  let backupDir: string | undefined;
+  let backupPaths: string[] = [];
+  const savedBackupDirs: string[] = [];
   const savedIncludes = (await readIncludes(homedir, adapter.name)).map((item) => checkPath(item, "config include"));
   if (command === "backup") {
-    backupEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes, ...runIncludes]);
+    const backupAdapter = async (target: ToolAdapter, entries: readonly string[], options: Parameters<typeof copyFiles>[3]) => {
+      const source = target.resolveHome(process.env, homedir);
+      const destination = path.join(syncDir, target.name);
+      const copied = await copyFiles(source, destination, entries, options);
+      let paths: string[] = [];
+      if (gitBacked) {
+        // Deleted files are gone from disk, so listFiles misses them; add them so the commit records the removal.
+        const present = (await listFiles(destination, entries, options.exclude)).map((file) => toRepoPath(target, file));
+        const deleted = copied.filter((change) => change.kind === "delete").map((change) => toRepoPath(target, change.file));
+        paths = [...present, ...deleted];
+      }
+      return { changes: copied, paths };
+    };
+    const backupEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes, ...runIncludes]);
     const filter = await adapter.activeFilter?.(local);
-    changes = await copyFiles(local, remote, backupEntries, { dryRun, guardDest: true, transform: backupTransform, exclude, filter });
+    ({ changes, paths: backupPaths } = await backupAdapter(adapter, backupEntries, { dryRun, guardDest: true, transform: backupTransform, exclude, filter }));
+    for (const globalAdapter of globalAdapters) {
+      const result = await backupAdapter(globalAdapter, globalAdapter.allowlist, { dryRun, guardDest: true, exclude: [] });
+      changes.push(...result.changes.map((change) => ({ ...change, file: toRepoPath(globalAdapter, change.file) })));
+      backupPaths.push(...result.paths);
+    }
     if (runIncludes.length > 0 && !dryRun) {
       await addIncludes(homedir, adapter.name, runIncludes.map((item) => item.split(path.sep).join("/")));
     }
@@ -90,25 +110,33 @@ async function main(): Promise<void> {
       throw isErrno(err, "ENOENT") ? new Error(`Folder "${remote}" does not exist. Run "ark init <git-url>" first, and "ark backup" on the machine that has the config.`) : err;
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    backupDir = path.join(homedir, ".ark", "backups", adapter.name, stamp);
+    const backupDir = path.join(homedir, ".ark", "backups", adapter.name, stamp);
     const entries = (await listTopLevel(remote)).filter((name) => !isBlocked(name, adapter.blocked));
     const pruneEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes]);
     // The repo manifest decides which plugin versions are live; the other versions in the repo stay there.
     const filter = await adapter.activeFilter?.(remote);
     changes = await copyFiles(remote, local, entries, { dryRun, backupDir, transform: restoreTransform, exclude, pruneEntries, filter });
+    // Only updates and deletes replace existing local files.
+    if (!dryRun && changes.some((change) => change.kind !== "new")) savedBackupDirs.push(backupDir);
+    for (const globalAdapter of globalAdapters) {
+      const globalRemote = path.join(syncDir, globalAdapter.name);
+      const globalLocal = globalAdapter.resolveHome(process.env, homedir);
+      const globalBackupDir = path.join(homedir, ".ark", "backups", globalAdapter.name, stamp);
+      const globalEntries = await listTopLevel(globalRemote);
+      const copied = await copyFiles(globalRemote, globalLocal, globalEntries, {
+        dryRun, backupDir: globalBackupDir, exclude: [], pruneEntries: globalAdapter.allowlist,
+      });
+      if (!dryRun && copied.some((change) => change.kind !== "new")) savedBackupDirs.push(globalBackupDir);
+      changes.push(...copied.map((change) => ({ ...change, file: toRepoPath(globalAdapter, change.file) })));
+    }
   }
 
   for (const change of changes) console.log(`${dryRun ? "would " : ""}${change.kind}: ${change.file}`);
   if (changes.length === 0) console.log("Nothing to sync.");
-  // Only updates and deletes replace existing local files, so only those leave something in backupDir.
-  if (backupDir && !dryRun && changes.some((change) => change.kind !== "new")) console.log(`Previous local files saved to ${backupDir}`);
+  for (const dir of savedBackupDirs) console.log(`Previous local files saved to ${dir}`);
 
   if (gitBacked && command === "backup") {
-    // Deleted files are gone from disk, so listFiles misses them; add them so the commit records the removal.
-    const toRepoPath = (file: string) => path.posix.join(adapter.name, file.split(path.sep).join("/"));
-    const present = (await listFiles(remote, backupEntries, exclude)).map(toRepoPath);
-    const deleted = changes.filter((change) => change.kind === "delete").map((change) => toRepoPath(change.file));
-    const paths = [...new Set([...present, ...deleted])];
+    const paths = [...new Set(backupPaths)];
     if (dryRun) {
       if (changes.length > 0 || (await hasChanges(syncDir, paths))) console.log("would commit");
     } else {
