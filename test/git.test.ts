@@ -67,6 +67,68 @@ test("backup in a git-backed folder creates a commit", opts, async (t) => {
   assert.match(res.stdout, /No remote/);
 });
 
+test("Copilot backup syncs only allowlisted entries", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const copilotDir = path.join(home, "copilot-local");
+  await initRepo(sync);
+  await writeFile(path.join(copilotDir, "settings.json"), "{}");
+  await writeFile(path.join(copilotDir, "agents", "review.md"), "agent");
+  await writeFile(path.join(copilotDir, "skills", "check", "SKILL.md"), "skill");
+  await writeFile(path.join(copilotDir, "installed-plugins", "plugin.json"), "{}");
+  await writeFile(path.join(copilotDir, "installed-plugins.lock"), "{}");
+  await writeFile(path.join(copilotDir, "config.json"), "private config");
+  await writeFile(path.join(copilotDir, "session-state", "session.json"), "session");
+  await writeFile(path.join(copilotDir, "logs", "ark.log"), "log");
+  await writeFile(path.join(copilotDir, "settings.json.lock"), "lock");
+
+  const res = await runCli(["backup", "--dir", sync, "--tool", "copilot"], claudeDir, home, { COPILOT_HOME: copilotDir });
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(git(sync, "log", "-1", "--format=%s"), /^sync\(copilot\): \d{4}-/);
+  assert.deepEqual(git(sync, "ls-tree", "-r", "--name-only", "HEAD").split("\n"), [
+    "copilot/agents/review.md",
+    "copilot/installed-plugins.lock",
+    "copilot/installed-plugins/plugin.json",
+    "copilot/settings.json",
+    "copilot/skills/check/SKILL.md",
+  ]);
+});
+
+test("Copilot restore restores allowlisted entries and leaves blocked entries untouched", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const copilotDir = path.join(home, "copilot-local");
+  await writeFile(path.join(sync, "copilot", "settings.json"), "repo settings");
+  await writeFile(path.join(sync, "copilot", "agents", "review.md"), "repo agent");
+  await writeFile(path.join(sync, "copilot", "skills", "check", "SKILL.md"), "repo skill");
+  await writeFile(path.join(sync, "copilot", "installed-plugins", "plugin.json"), "repo plugin");
+  await writeFile(path.join(sync, "copilot", "installed-plugins.lock"), "repo lock");
+  await writeFile(path.join(sync, "copilot", "config.json"), "repo config");
+  await writeFile(path.join(sync, "copilot", "session-state", "session.json"), "repo session");
+  await writeFile(path.join(sync, "copilot", "logs", "ark.log"), "repo log");
+  await writeFile(path.join(sync, "copilot", "settings.json.lock"), "repo lockfile");
+
+  await writeFile(path.join(copilotDir, "settings.json"), "local settings");
+  await writeFile(path.join(copilotDir, "skills", "check", "SKILL.md"), "local skill");
+  await writeFile(path.join(copilotDir, "installed-plugins.lock"), "local lock");
+  await writeFile(path.join(copilotDir, "skills", "removed", "SKILL.md"), "removed from repo");
+  await writeFile(path.join(copilotDir, "config.json"), "local config");
+  await writeFile(path.join(copilotDir, "session-state", "session.json"), "local session");
+  await writeFile(path.join(copilotDir, "logs", "ark.log"), "local log");
+  await writeFile(path.join(copilotDir, "settings.json.lock"), "local lockfile");
+
+  const res = await runCli(["restore", "--dir", sync, "--tool", "copilot"], claudeDir, home, { COPILOT_HOME: copilotDir });
+  assert.equal(res.code, 0, res.stderr);
+  assert.equal(await fs.readFile(path.join(copilotDir, "settings.json"), "utf8"), "repo settings");
+  assert.equal(await fs.readFile(path.join(copilotDir, "agents", "review.md"), "utf8"), "repo agent");
+  assert.equal(await fs.readFile(path.join(copilotDir, "skills", "check", "SKILL.md"), "utf8"), "repo skill");
+  await assert.rejects(fs.stat(path.join(copilotDir, "skills", "removed", "SKILL.md")), { code: "ENOENT" });
+  assert.equal(await fs.readFile(path.join(copilotDir, "installed-plugins", "plugin.json"), "utf8"), "repo plugin");
+  assert.equal(await fs.readFile(path.join(copilotDir, "installed-plugins.lock"), "utf8"), "repo lock");
+  assert.equal(await fs.readFile(path.join(copilotDir, "config.json"), "utf8"), "local config");
+  assert.equal(await fs.readFile(path.join(copilotDir, "session-state", "session.json"), "utf8"), "local session");
+  assert.equal(await fs.readFile(path.join(copilotDir, "logs", "ark.log"), "utf8"), "local log");
+  assert.equal(await fs.readFile(path.join(copilotDir, "settings.json.lock"), "utf8"), "local lockfile");
+});
+
 test("backup with no changes creates no extra commit", opts, async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   await initRepo(sync);
@@ -399,7 +461,7 @@ test("global agents is not a selectable tool", async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   const res = await runCli(["backup", "--dir", sync, "--tool", "agents"], claudeDir, home);
   assert.equal(res.code, 1);
-  assert.equal(res.stderr.trim(), 'Unknown tool "agents". Available: claude');
+  assert.equal(res.stderr.trim(), 'Unknown tool "agents". Available: claude, copilot');
 });
 
 test("global agents restore copies and prunes independently of selected tool filters", async (t) => {
@@ -767,6 +829,18 @@ test("backup fails on a saved include that is blocked", async (t) => {
   assert.equal(res.code, 1);
   assert.match(res.stderr, /include/);
   assert.deepEqual(await fs.readdir(sync), []);
+});
+
+test("Copilot backup fails when config.json is explicitly included", async (t) => {
+  const { home, claudeDir, sync, config } = await plainSetup(t);
+  const copilotDir = path.join(home, "copilot-local");
+  const res = await runCli(["backup", "--dir", sync, "--tool", "copilot", "--include", "config.json"], claudeDir, home, {
+    COPILOT_HOME: copilotDir,
+  });
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /--include/);
+  assert.deepEqual(await fs.readdir(sync), []);
+  await assert.rejects(fs.stat(config));
 });
 
 test("restore rejects --include", async (t) => {
