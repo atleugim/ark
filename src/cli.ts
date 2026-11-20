@@ -10,7 +10,7 @@ import { commitAndPush, gitClone, gitPull, hasChanges, isGitBacked } from "./git
 import { copyFiles, isBlocked, isErrno, listFiles, listTopLevel, normalizeUserPath, uniqueByKey } from "./sync.ts";
 
 const usage =
-  "Usage: ark init <git-url>\n       ark <backup|restore> [--tool claude] [--dry-run] [--include <path>]... [--exclude <path>]...\n       ark -h|--help\nThe repo lives in ~/.ark/repo (--dir <path> overrides it). ~/.agents (skills/ and .skill-lock.json) is also synced on every backup/restore. --include (backup only) adds a file or folder (relative to the selected tool's folder) to the backup and saves it in ~/.ark/config.json for later runs; repeat it for several. --exclude skips a file or folder (relative to the selected tool's folder) for this run only; repeat it for several. Files removed from a synced folder are removed on the other side too (restore saves them to ~/.ark/backups first).";
+  "Usage: ark init <git-url>\n       ark <backup|restore> [--tool claude|copilot] [--dry-run] [--include <path>]... [--exclude <path>]...\n       ark -h|--help\nThe repo lives in ~/.ark/repo (--dir <path> overrides it). ~/.agents (skills/ and .skill-lock.json) is also synced on every backup/restore. --include (backup only) adds a file or folder (relative to the selected tool's folder) to the backup and saves it in ~/.ark/config.json for later runs; repeat it for several. --exclude skips a file or folder (relative to the selected tool's folder) for this run only; repeat it for several. Files removed from a synced folder are removed on the other side too (restore saves them to ~/.ark/backups first).";
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({

@@ -43,6 +43,7 @@ ark restore
 ```sh
 ark init <git-url>     # one-time: clone the private repo into ~/.ark/repo
 ark backup             # local config -> ~/.ark/repo/claude and ~/.ark/repo/agents, commit, push
+ark backup --tool copilot  # ~/.copilot -> ~/.ark/repo/copilot, commit, push
 ark backup --dry-run   # list changes without writing anything
 ark restore            # git pull --ff-only, then repo config -> local config (also prunes, see Deletions)
 ark restore --dry-run  # list changes without writing anything
@@ -54,13 +55,13 @@ ark restore --exclude skills/scratch                # skip this path for this ru
 - `backup` and `restore` also sync `~/.agents/skills/` and `~/.agents/.skill-lock.json` with `<repo>/agents`; these changes are reported with an `agents/` prefix.
 - `backup` copies the local config into `<repo>/<tool>`. It fails with a hint to run `ark init` if the repo folder does not exist.
 - `restore` copies `<repo>/<tool>` into the local config and deletes local files, inside the paths `backup` syncs, that are absent from the repo (see Deletions). It fails if the repo or `<repo>/<tool>` does not exist (run `ark init`, and `ark backup` on the machine that has the config).
-- `--tool <name>`: select the tool-specific adapter (default `claude`); the global `agents` sync always runs and is not selectable.
+- `--tool <name>`: select the tool-specific adapter: `claude` (default) or `copilot`; the global `agents` sync always runs and is not selectable.
 - `--dir <path>`: use this folder instead of `~/.ark/repo` (mainly for tests).
 - `--include <path>`: `backup` only; add a file or folder from the selected tool's config to the backup and save it in `~/.ark/config.json` for later runs. Repeat it for several paths. `restore --include` is rejected. The path does not need to exist locally. Nothing is saved with `--dry-run`. It does not apply to `~/.agents`.
 - `--exclude <path>`: `backup` and `restore`; skip a file or folder in the selected tool's config for this run only (never saved). Repeat it for several paths. It does not apply to `~/.agents`.
 - `--dry-run`: print what would change (`would new: <file>` / `would update: <file>` / `would delete: <file>`) without writing files.
 
-The local Claude config directory is `~/.claude`, or `CLAUDE_CONFIG_DIR` if set.
+The local Claude config directory is `~/.claude`, or `CLAUDE_CONFIG_DIR` if set. For `--tool copilot` it is `~/.copilot`, or `COPILOT_HOME` if set.
 
 Paths for `--include` and `--exclude` are relative to that directory. Absolute paths, paths containing `..` and empty paths are rejected. An `--include` of a never-synced name (see "What is synced") is an error; only the top-level segment is checked, and `--exclude` is not checked against that list.
 
@@ -97,6 +98,8 @@ The repo folder is a git repository, so `backup` and `restore` use git.
 
 Every `backup` and `restore` also syncs `~/.agents/skills/` and `~/.agents/.skill-lock.json` with `<repo>/agents/`. A missing `~/.agents` source or `<repo>/agents` repo directory is skipped; symlinked source entries are skipped. Backup syncs only these two entries. Restore copies entries present in `<repo>/agents/`, but prunes local files only inside `skills/` and `.skill-lock.json`; other local files are not pruned (though matching repo entries can be copied over them). `--exclude` is not applied to this sync.
 
+### Claude (default)
+
 `backup` syncs this allowlist plus any includes (saved ones and those passed with `--include` in this run), minus any `--exclude`. Paths are relative to the Claude config directory:
 
 - `settings.json`
@@ -122,6 +125,20 @@ Known limitations of pruning:
 - A folder that holds only OS metadata files (skipped, see above) is not removed.
 
 There is no conflict detection: the last backup wins. `backup` overwrites and deletes files in the repo without a backup (in a git-backed repo, git history is the recovery); only `restore` backs up local files. Run with `--dry-run` first to review changes.
+
+### Copilot (`--tool copilot`)
+
+The same include, exclude, restore and deletion rules apply, with the repo folder `<repo>/copilot`. Paths are relative to the Copilot config directory (`~/.copilot` or `COPILOT_HOME`). The allowlist is:
+
+- `settings.json`
+- `agents/`
+- `skills/`
+- `installed-plugins/`
+- `installed-plugins.lock`
+
+`installed-plugins` is synced verbatim: unlike the Claude plugin manifests, no paths are rewritten.
+
+Never synced, not even with `--include`, and skipped by `restore` even if present in the repo: `config.json`, `plugin-data`, `session-state`, `session-store.db`, `session-store.db-shm`, `session-store.db-wal`, `logs`, `ide`, `command-history-state.json`, `open-sessions-state.json`, `sidebar-sessions-state`, `servers`, `config.json.trusted-folders.lock`, `settings.json.lock`.
 
 ## Backups
 
