@@ -4,7 +4,7 @@ import path from "node:path";
 
 export interface Change {
   file: string;
-  kind: "new" | "update" | "delete";
+  kind: "new" | "update" | "delete" | "link";
 }
 
 export function isErrno(err: unknown, ...codes: string[]): boolean {

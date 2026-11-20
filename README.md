@@ -59,7 +59,7 @@ ark restore --exclude skills/scratch                # skip this path for this ru
 - `--dir <path>`: use this folder instead of `~/.ark/repo` (mainly for tests).
 - `--include <path>`: `backup` only; add a file or folder from the selected tool's config to the backup and save it in `~/.ark/config.json` for later runs. Repeat it for several paths. `restore --include` is rejected. The path does not need to exist locally. Nothing is saved with `--dry-run`. It does not apply to `~/.agents`.
 - `--exclude <path>`: `backup` and `restore`; skip a file or folder in the selected tool's config for this run only (never saved). Repeat it for several paths. It does not apply to `~/.agents`.
-- `--dry-run`: print what would change (`would new: <file>` / `would update: <file>` / `would delete: <file>`) without writing files.
+- `--dry-run`: print what would change (`would new: <file>` / `would update: <file>` / `would delete: <file>` / `would link: skills/<name>`) without writing files.
 
 The local Claude config directory is `~/.claude`, or `CLAUDE_CONFIG_DIR` if set. For `--tool copilot` it is `~/.copilot`, or `COPILOT_HOME` if set.
 
@@ -87,7 +87,7 @@ pnpm build
 The repo folder is a git repository, so `backup` and `restore` use git.
 
 - `restore` runs `git pull --ff-only` in the repo first, then copies. If the pull fails (diverged history, no remote, network), it stops with git's error and copies nothing.
-- `backup` copies, then commits any changes as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). One commit includes the selected tool's allowlist and includes under `<repo>/<tool>` (including removals of files that `backup` deleted) plus changes under `<repo>/agents/skills/` and `<repo>/agents/.skill-lock.json`. The subject remains `sync(<tool>): ...`; other files in `<repo>/<tool>` are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
+- `backup` copies, then commits any changes as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). One commit includes the selected tool's allowlist and includes under `<repo>/<tool>` (including removals of files that `backup` deleted) plus changes under `<repo>/agents/skills/` and `<repo>/agents/.skill-lock.json`, and, for `--tool claude`, `<repo>/links.json` (see "Claude skill links"). The subject remains `sync(<tool>): ...`; other files in `<repo>/<tool>` are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
 - `--dry-run` runs no git writes. `backup` prints `would commit` if there would be changes; `restore` skips the git pull.
 - Your existing git identity is used. The repo is trusted: git runs its hooks and config. Conflicts are never resolved automatically: if a pull or push fails, resolve it by hand with git in the repo, then run the command again.
 - A plain folder at the repo path (no `.git`) still works for `backup` and `restore` without git.
@@ -97,6 +97,20 @@ The repo folder is a git repository, so `backup` and `restore` use git.
 ### Global agent configuration
 
 Every `backup` and `restore` also syncs `~/.agents/skills/` and `~/.agents/.skill-lock.json` with `<repo>/agents/`. A missing `~/.agents` source or `<repo>/agents` repo directory is skipped; symlinked source entries are skipped. Backup syncs only these two entries. Restore copies entries present in `<repo>/agents/`, but prunes local files only inside `skills/` and `.skill-lock.json`; other local files are not pruned (though matching repo entries can be copied over them). `--exclude` is not applied to this sync.
+
+### Claude skill links
+
+Claude skills installed from `~/.agents/skills` are often symlinks such as `~/.claude/skills/<name> -> ../../.agents/skills/<name>`. They are not uploaded as files. Instead, `backup` records them in `<repo>/links.json` (at the repo root, included in the backup commit and reported as `new: links.json` / `update: links.json`):
+
+```json
+{
+  "claude": [{ "link": "my-skill", "target": "my-skill" }]
+}
+```
+
+Only names are stored, sorted, and the file is regenerated from scratch on every `backup`. Only symlinks that point straight at a skill folder in `~/.agents/skills` are recorded; other symlinks stay ignored. With no such links and no existing `links.json`, nothing is written; with no links and an existing file, it is rewritten with an empty `claude` list (the last backup wins, so a machine without links drops the entries of other machines). Once a skill is a symlink locally, the next `backup` deletes its old copy under `claude/skills/<name>/` from the repo. `--exclude` does not apply to links: `backup --exclude skills` still records them in `links.json`, while any older `claude/skills/<name>/` copies stay in the repo, so a later `restore` may report extra changes.
+
+After restoring `~/.agents`, `restore` recreates the missing links as relative directory symlinks inside `~/.claude/skills` (or `CLAUDE_CONFIG_DIR/skills`). `restore --dry-run` prints `would link: skills/<name>`. A link that already points to the right skill (relative or absolute) is left alone silently. Anything else that already exists at the link path, or a target skill that is missing from `~/.agents/skills`, is skipped with a warning on stderr. Only `--tool claude` uses `links.json`; `--tool copilot` ignores it.
 
 ### Claude (default)
 
@@ -112,7 +126,7 @@ Every `backup` and `restore` also syncs `~/.agents/skills/` and `~/.agents/.skil
 
 `restore` takes every top-level entry present in `<repo>/<tool>` (not just the allowlist), except the never-synced names below. This includes entries that another machine added with `--include`. On a new machine, run `ark backup --include <path>` once so those includes are also saved locally and backed up from there. `restore` copies every file the repo has under those entries (for plugins, only the active version, by the same manifest rule), but it only prunes inside the paths `backup` would sync (the allowlist and the includes saved in `~/.ark/config.json`), so a local file that `backup` never uploads is never deleted. Behavior change: older versions of `restore` only copied, and only the allowlist; it now also prunes (see "Deletions" below). Run `ark restore --dry-run` first.
 
-Only regular files are read. OS metadata files (`.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`, `.localized`, `ehthumbs.db`) are skipped inside synced folders. Symlinks are skipped, including allowlisted entries that are themselves symlinks (for example, a `settings.json` symlinked from a dotfiles repo is not backed up).
+Only regular files are read. OS metadata files (`.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`, `.localized`, `ehthumbs.db`) are skipped inside synced folders. Symlinks are skipped, including allowlisted entries that are themselves symlinks (for example, a `settings.json` symlinked from a dotfiles repo is not backed up). The one exception is a Claude skill symlink into `~/.agents/skills`, which is recorded in `links.json` (see "Claude skill links").
 
 Never synced, not even with `--include`, and skipped by `restore` even if present in the repo: `.credentials.json`, `settings.local.json`, `projects`, `sessions`, `history.jsonl`, `todos`, `statsig`, `shell-snapshots`, `ide`, `file-history`, `debug`, `session-env`, `telemetry`. Names are matched case-insensitively, with NFKC normalization, and trailing dots and spaces are ignored (`projects.` and `projects ` count as `projects`). On `backup`, anything that is not in the allowlist or an include is ignored.
 
@@ -152,6 +166,8 @@ For the global agent configuration, previous files are saved under `~/.ark/backu
 
 - `backup` refuses to write through symlinks in the repo folder (including the `<dir>/<tool>` folder itself). It stops with an error mid-run, so earlier files may already have been written.
 - `restore` follows a symlinked local file and writes to its target, so symlinked dotfiles stay linked.
+- `restore` creates skill links only inside `~/.claude/skills` (or `CLAUDE_CONFIG_DIR/skills`), and only for names that are not empty, `.` or `..` and contain no `/` or `\`. It never replaces or deletes an existing file or symlink: conflicts are skipped with a warning. If `~/.claude/skills` is itself a symlink or not a folder, all links are skipped with a warning. Creating a link may need extra permission on some systems (for example Windows); when it is denied, that link is skipped with a warning.
+- `backup` refuses to write `links.json` if it is a symlink in the repo folder.
 - Writes go to a temporary file followed by a rename.
 
 ## Adding a tool

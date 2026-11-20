@@ -7,6 +7,7 @@ import { adapters, globalAdapters } from "./adapters/index.ts";
 import type { ToolAdapter } from "./adapters/types.ts";
 import { addIncludes, readIncludes, resolveRepoDir, saveRepoDir } from "./config.ts";
 import { commitAndPush, gitClone, gitPull, hasChanges, isGitBacked } from "./git.ts";
+import { LINKS_FILE, restoreSkillLinks, scanSkillLinks, writeLinksManifest } from "./links.ts";
 import { copyFiles, isBlocked, isErrno, listFiles, listTopLevel, normalizeUserPath, uniqueByKey } from "./sync.ts";
 
 const usage =
@@ -101,6 +102,12 @@ async function main(): Promise<void> {
       changes.push(...result.changes.map((change) => ({ ...change, file: toRepoPath(globalAdapter, change.file) })));
       backupPaths.push(...result.paths);
     }
+    if (adapter.name === "claude") {
+      const agentsHome = globalAdapters.find((item) => item.name === "agents")!.resolveHome(process.env, homedir);
+      const change = await writeLinksManifest(syncDir, await scanSkillLinks(local, agentsHome), dryRun);
+      if (change) changes.push(change);
+      if (gitBacked) backupPaths.push(LINKS_FILE);
+    }
     if (runIncludes.length > 0 && !dryRun) {
       await addIncludes(homedir, adapter.name, runIncludes.map((item) => item.split(path.sep).join("/")));
     }
@@ -128,6 +135,11 @@ async function main(): Promise<void> {
       });
       if (!dryRun && copied.some((change) => change.kind !== "new")) savedBackupDirs.push(globalBackupDir);
       changes.push(...copied.map((change) => ({ ...change, file: toRepoPath(globalAdapter, change.file) })));
+    }
+    // After the ~/.agents restore, so the link targets exist.
+    if (adapter.name === "claude") {
+      const agentsHome = globalAdapters.find((item) => item.name === "agents")!.resolveHome(process.env, homedir);
+      changes.push(...(await restoreSkillLinks(syncDir, local, agentsHome, dryRun)));
     }
   }
 
