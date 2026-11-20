@@ -308,6 +308,185 @@ async function writeFile(file: string, data: string): Promise<void> {
   await fs.writeFile(file, data);
 }
 
+test("backup commits global agents skills and lock alongside the selected tool", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".agents", "skills", "x", "SKILL.md"), "shared skill");
+  await writeFile(path.join(home, ".agents", ".skill-lock.json"), "{}");
+  await writeFile(path.join(home, ".agents", "other.txt"), "not synced");
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.equal(await fs.readFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "utf8"), "shared skill");
+  assert.equal(await fs.readFile(path.join(sync, "agents", ".skill-lock.json"), "utf8"), "{}");
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "1");
+  assert.match(git(sync, "log", "-1", "--format=%s"), /^sync\(claude\): \d{4}-/);
+  assert.deepEqual(git(sync, "ls-tree", "-r", "--name-only", "HEAD").split("\n"), [
+    "agents/.skill-lock.json",
+    "agents/skills/x/SKILL.md",
+    "claude/CLAUDE.md",
+  ]);
+  assert.match(res.stdout, /^new: CLAUDE\.md$/m);
+  assert.match(res.stdout, /^new: agents\/skills\/x\/SKILL\.md$/m);
+  assert.match(res.stdout, /^new: agents\/\.skill-lock\.json$/m);
+  await assert.rejects(fs.stat(path.join(sync, "agents", "other.txt")), { code: "ENOENT" });
+  const again = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(again.stdout.match(/Nothing to sync\./g)?.length, 1);
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "1");
+});
+
+test("dry-run backup reports agents-only changes without writing or committing", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  const first = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(first.code, 0, first.stderr);
+  await writeFile(path.join(home, ".agents", "skills", "x", "SKILL.md"), "shared skill");
+  await writeFile(path.join(home, ".agents", ".skill-lock.json"), "{}");
+  const res = await runCli(["backup", "--dir", sync, "--dry-run"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^would new: agents\/skills\/x\/SKILL\.md$/m);
+  assert.match(res.stdout, /would commit/);
+  assert.doesNotMatch(res.stdout, /Nothing to sync/);
+  await assert.rejects(fs.stat(path.join(sync, "agents")), { code: "ENOENT" });
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "1");
+  assert.equal(git(sync, "status", "--porcelain"), "");
+});
+
+test("backup commits a deletion from global agents skills", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  const skill = path.join(home, ".agents", "skills", "x", "SKILL.md");
+  await writeFile(skill, "shared skill");
+  const first = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(first.code, 0, first.stderr);
+  await fs.rm(skill);
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^delete: agents\/skills\/x\/SKILL\.md$/m);
+  await assert.rejects(fs.stat(path.join(sync, "agents", "skills", "x", "SKILL.md")), { code: "ENOENT" });
+  assert.equal(git(sync, "show", "--name-status", "--format=", "HEAD"), "D\tagents/skills/x/SKILL.md");
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "2");
+  assert.equal(git(sync, "status", "--porcelain"), "");
+});
+
+test("backup includes and excludes apply only to the selected tool, not global agents", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(home, ".ark", "config.json"), JSON.stringify({ include: { claude: ["rules"] } }));
+  for (const root of [claudeDir, path.join(home, ".agents")]) {
+    await writeFile(path.join(root, "skills", "x", "SKILL.md"), "skill");
+    await writeFile(path.join(root, ".skill-lock.json"), "{}");
+    await writeFile(path.join(root, "rules", "a.md"), "saved include");
+    await writeFile(path.join(root, "notes", "a.md"), "run include");
+  }
+  const res = await runCli(["backup", "--dir", sync, "--exclude", "skills", "--exclude", ".skill-lock.json", "--include", "notes"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.deepEqual(git(sync, "ls-tree", "-r", "--name-only", "HEAD").split("\n"), [
+    "agents/.skill-lock.json",
+    "agents/skills/x/SKILL.md",
+    "claude/CLAUDE.md",
+    "claude/notes/a.md",
+    "claude/rules/a.md",
+  ]);
+  await assert.rejects(fs.stat(path.join(sync, "claude", "skills")), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(sync, "agents", "notes")), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(sync, "agents", "rules")), { code: "ENOENT" });
+  const config = JSON.parse(await fs.readFile(path.join(home, ".ark", "config.json"), "utf8"));
+  assert.deepEqual(config.include, { claude: ["rules", "notes"] });
+});
+
+test("global agents is not a selectable tool", async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "agents"], claudeDir, home);
+  assert.equal(res.code, 1);
+  assert.equal(res.stderr.trim(), 'Unknown tool "agents". Available: claude');
+});
+
+test("global agents restore copies and prunes independently of selected tool filters", async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const agents = path.join(home, ".agents");
+  await writeFile(path.join(home, ".ark", "config.json"), JSON.stringify({ include: { claude: ["rules"] } }));
+  await writeFile(path.join(sync, "claude", "CLAUDE.md"), "changed");
+  await writeFile(path.join(sync, "claude", "skills", "x", "SKILL.md"), "claude skill");
+  await writeFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "shared skill");
+  await writeFile(path.join(sync, "agents", ".skill-lock.json"), "new lock");
+  await writeFile(path.join(sync, "agents", "rules", "repo.md"), "repo only");
+  await writeFile(path.join(agents, "skills", "gone", "SKILL.md"), "old skill");
+  await writeFile(path.join(agents, ".skill-lock.json"), "old lock");
+  await writeFile(path.join(agents, "other.txt"), "keep");
+  await writeFile(path.join(agents, "rules", "local.md"), "keep");
+
+  const res = await runCli(["restore", "--dir", sync, "--exclude", "skills", "--exclude", ".skill-lock.json"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.equal(await fs.readFile(path.join(agents, "skills", "x", "SKILL.md"), "utf8"), "shared skill");
+  assert.equal(await fs.readFile(path.join(agents, ".skill-lock.json"), "utf8"), "new lock");
+  assert.equal(await fs.readFile(path.join(agents, "rules", "repo.md"), "utf8"), "repo only");
+  assert.equal(await fs.readFile(path.join(agents, "rules", "local.md"), "utf8"), "keep");
+  assert.equal(await fs.readFile(path.join(agents, "other.txt"), "utf8"), "keep");
+  await assert.rejects(fs.stat(path.join(agents, "skills", "gone", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(claudeDir, "skills")), { code: "ENOENT" });
+  const [stamp] = await fs.readdir(path.join(home, ".ark", "backups", "agents"));
+  const backup = path.join(home, ".ark", "backups", "agents", stamp);
+  assert.equal(await fs.readFile(path.join(backup, "skills", "gone", "SKILL.md"), "utf8"), "old skill");
+  assert.equal(await fs.readFile(path.join(backup, ".skill-lock.json"), "utf8"), "old lock");
+  assert.match(res.stdout, /^new: agents\/skills\/x\/SKILL\.md$/m);
+  assert.match(res.stdout, /^delete: agents\/skills\/gone\/SKILL\.md$/m);
+  assert.ok(res.stdout.includes(`Previous local files saved to ${backup}`));
+  assert.equal(res.stdout.match(/Previous local files saved to /g)?.length, 2);
+  assert.doesNotMatch(res.stdout, /Nothing to sync/);
+  const again = await runCli(["restore", "--dir", sync, "--exclude", "skills"], claudeDir, home);
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(again.stdout.match(/Nothing to sync\./g)?.length, 1);
+  assert.doesNotMatch(again.stdout, /saved to/);
+});
+
+test("global agents restore skips a missing agents repo without pruning", async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "claude", "CLAUDE.md"), "hello");
+  await writeFile(path.join(home, ".agents", "skills", "keep", "SKILL.md"), "local");
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.equal(res.stdout.trim(), "Nothing to sync.");
+  assert.equal(await fs.readFile(path.join(home, ".agents", "skills", "keep", "SKILL.md"), "utf8"), "local");
+  await assert.rejects(fs.stat(path.join(home, ".ark", "backups")), { code: "ENOENT" });
+});
+
+test("global agents restore validates the selected tool before writing", async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "shared skill");
+  const res = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.notEqual(res.code, 0);
+  assert.match(res.stderr, /Folder .*claude.* does not exist/);
+  await assert.rejects(fs.stat(path.join(home, ".agents")), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(home, ".ark", "backups")), { code: "ENOENT" });
+});
+
+test("global agents restore dry-run skips pull and reports changes without writing", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const bare = path.join(home, "remote.git");
+  const seed = await seedRemote(home, bare);
+  await writeFile(path.join(seed, "agents", "skills", "x", "SKILL.md"), "v1");
+  git(seed, "add", "-A");
+  git(seed, "commit", "-q", "-m", "agents");
+  git(seed, "push", "-q", "origin", "main");
+  git(home, "clone", "-q", bare, sync);
+  await writeFile(path.join(seed, "agents", "skills", "x", "SKILL.md"), "v2");
+  git(seed, "commit", "-q", "-am", "agents v2");
+  git(seed, "push", "-q", "origin", "main");
+  await writeFile(path.join(home, ".agents", "skills", "gone", "SKILL.md"), "old");
+  const res = await runCli(["restore", "--dir", sync, "--dry-run"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^would new: agents\/skills\/x\/SKILL\.md$/m);
+  assert.match(res.stdout, /^would delete: agents\/skills\/gone\/SKILL\.md$/m);
+  assert.equal(await fs.readFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "utf8"), "v1");
+  assert.equal(await fs.readFile(path.join(home, ".agents", "skills", "gone", "SKILL.md"), "utf8"), "old");
+  await assert.rejects(fs.stat(path.join(home, ".agents", "skills", "x")), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(home, ".ark", "backups")), { code: "ENOENT" });
+  const restored = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(restored.code, 0, restored.stderr);
+  assert.equal(await fs.readFile(path.join(home, ".agents", "skills", "x", "SKILL.md"), "utf8"), "v2");
+});
+
 test("backup commits the deletion of a file removed locally", opts, async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   await initRepo(sync);
