@@ -43,7 +43,7 @@ async function initRepo(dir: string): Promise<void> {
 
 async function runCli(args: string[], claudeDir: string, home: string, env: NodeJS.ProcessEnv = {}) {
   return run(process.execPath, [cli, ...args], {
-    env: { ...process.env, ...gitEnv, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claudeDir, XDG_CONFIG_HOME: path.join(home, "xdg-default"), ...env },
+    env: { ...process.env, ...gitEnv, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claudeDir, XDG_CONFIG_HOME: path.join(home, "xdg-default"), COPILOT_HOME: path.join(home, "copilot-default"), ...env },
   }).then(
     (r) => ({ code: 0, ...r }),
     (e: { code: number; stdout: string; stderr: string }) => ({ code: e.code, stdout: e.stdout, stderr: e.stderr }),
@@ -484,7 +484,7 @@ test("backup includes and excludes apply only to the selected tool, not global a
     await writeFile(path.join(root, "rules", "a.md"), "saved include");
     await writeFile(path.join(root, "notes", "a.md"), "run include");
   }
-  const res = await runCli(["backup", "--dir", sync, "--exclude", "skills", "--exclude", ".skill-lock.json", "--include", "notes"], claudeDir, home);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--exclude", "skills", "--exclude", ".skill-lock.json", "--include", "notes"], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.deepEqual(git(sync, "ls-tree", "-r", "--name-only", "HEAD").split("\n"), [
     "agents/.skill-lock.json",
@@ -764,7 +764,7 @@ test("backup --exclude skips and keeps the excluded repo copy, without touching 
   await writeFile(path.join(claudeDir, "skills", "bar", "SKILL.md"), "bar");
   await writeFile(path.join(claudeDir, "settings.json"), "{}");
   await writeFile(path.join(sync, "claude", "skills", "foo", "SKILL.md"), "old");
-  const res = await runCli(["backup", "--dir", sync, "--exclude", "skills/foo", "--exclude", "settings.json"], claudeDir, home);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--exclude", "skills/foo", "--exclude", "settings.json"], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.doesNotMatch(res.stdout, /foo|settings/);
   assert.equal(await fs.readFile(path.join(sync, "claude", "skills", "foo", "SKILL.md"), "utf8"), "old");
@@ -779,7 +779,7 @@ test("backup --exclude does not commit an excluded file already in the repo", op
   const { home, claudeDir, sync } = await setup(t);
   await initRepo(sync);
   await writeFile(path.join(sync, "claude", "skills", "foo", "SKILL.md"), "old");
-  const res = await runCli(["backup", "--dir", sync, "--exclude", "skills/foo"], claudeDir, home);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--exclude", "skills/foo"], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.doesNotMatch(git(sync, "ls-tree", "-r", "--name-only", "HEAD"), /foo/);
 });
@@ -824,7 +824,7 @@ async function plainSetup(t: TestContext) {
 
 test("backup --include copies the path, saves it, and later backups keep syncing it", async (t) => {
   const { home, claudeDir, sync, saved } = await plainSetup(t);
-  const res = await runCli(["backup", "--dir", sync, "--include", "rules"], claudeDir, home);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--include", "rules"], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.equal(await fs.readFile(path.join(sync, "claude", "rules", "a.md"), "utf8"), "rule");
   assert.deepEqual(await saved(), ["rules"]);
@@ -838,8 +838,8 @@ test("backup --include does not duplicate saved entries or change lines", async 
   const { home, claudeDir, sync, saved } = await plainSetup(t);
   await fs.mkdir(path.join(claudeDir, "skills"));
   await fs.writeFile(path.join(claudeDir, "skills", "s.md"), "s");
-  await runCli(["backup", "--dir", sync, "--include", "rules"], claudeDir, home);
-  const res = await runCli(["backup", "--dir", sync, "--include", "rules", "--include", "Rules", "--include", "skills/s.md", "--include", "Skills"], claudeDir, home);
+  await runCli(["backup", "--dir", sync, "--tool", "claude", "--include", "rules"], claudeDir, home);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--include", "rules", "--include", "Rules", "--include", "skills/s.md", "--include", "Skills"], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.equal((await saved()).filter((item: string) => item.toLowerCase() === "rules").length, 1);
   assert.equal(res.stdout.trim(), "Nothing to sync.");
@@ -848,7 +848,7 @@ test("backup --include does not duplicate saved entries or change lines", async 
 test("backup --include rejects bad paths and writes nothing", async (t) => {
   const { home, claudeDir, sync, config } = await plainSetup(t);
   for (const bad of [".credentials.json", "projects/x", "/abs", "../x", "", "settings.local.json"]) {
-    const res = await runCli(["backup", "--dir", sync, "--include", bad], claudeDir, home);
+    const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--include", bad], claudeDir, home);
     assert.equal(res.code, 1, `${bad}: ${res.stderr}`);
     assert.match(res.stderr, /--include/);
   }
@@ -858,7 +858,7 @@ test("backup --include rejects bad paths and writes nothing", async (t) => {
 
 test("backup --dry-run --include reports changes without saving", async (t) => {
   const { home, claudeDir, sync, config } = await plainSetup(t);
-  const res = await runCli(["backup", "--dir", sync, "--dry-run", "--include", "rules"], claudeDir, home);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--dry-run", "--include", "rules"], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.match(res.stdout, /would new: rules/);
   await assert.rejects(fs.stat(config));
@@ -896,7 +896,7 @@ test("restore rejects --include", async (t) => {
 test("backup --include also commits the included files", opts, async (t) => {
   const { home, claudeDir, sync } = await plainSetup(t);
   await initRepo(sync);
-  const res = await runCli(["backup", "--dir", sync, "--include", "rules"], claudeDir, home);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--include", "rules"], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.match(git(sync, "show", "--name-only", "--format=", "HEAD"), /claude\/rules\/a\.md/);
 });
@@ -921,7 +921,7 @@ test("a mis-cased --include overlapping an adapter entry keeps the on-disk casin
   await fs.writeFile(path.join(claudeDir, "skills", "s.md"), "s");
   const caseInsensitive = await fs.stat(path.join(claudeDir, "Skills", "S.md")).then(() => true, () => false);
   if (!caseInsensitive) return t.skip("case-sensitive filesystem");
-  const res = await runCli(["backup", "--dir", sync, "--include", "Skills/S.md"], claudeDir, home);
+  const res = await runCli(["backup", "--dir", sync, "--tool", "claude", "--include", "Skills/S.md"], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.match(res.stdout, /new: skills[\\/]s\.md/);
   const tracked = git(sync, "ls-files");
@@ -1325,4 +1325,101 @@ test("restore --prune deletes the local plugin cache when the repo has none", op
   const saved = path.join(home, ".ark", "backups", "claude", stamp, "plugins", "cache", "m", "p");
   assert.equal(await fs.readFile(path.join(saved, "1.0.0", "a.txt"), "utf8"), "a");
   assert.equal(await fs.readFile(path.join(saved, "0.9.0", "b.txt"), "utf8"), "b");
+});
+
+test("backup without --tool prunes a tool whose home is gone but whose repo folder remains", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  const copilotDir = path.join(home, "copilot-local");
+  await fs.mkdir(copilotDir);
+  await fs.writeFile(path.join(copilotDir, "settings.json"), "hi");
+  const env = { COPILOT_HOME: copilotDir };
+  assert.equal((await runCli(["backup", "--dir", sync, "--tool", "copilot"], claudeDir, home, env)).code, 0);
+  await fs.rm(copilotDir, { recursive: true });
+  await fs.rm(claudeDir, { recursive: true });
+  await fs.mkdir(path.join(sync, "claude"), { recursive: true });
+  const dry = await runCli(["backup", "--prune", "--dry-run", "--dir", sync], claudeDir, home, env);
+  assert.equal(dry.code, 0);
+  assert.match(dry.stdout, /would delete: settings\.json/);
+  await fs.stat(path.join(sync, "copilot", "settings.json"));
+  const res = await runCli(["backup", "--prune", "--dir", sync], claudeDir, home, env);
+  assert.equal(res.code, 0);
+  assert.match(git(sync, "log", "-1", "--format=%s"), /^sync\(copilot\): /);
+  await assert.rejects(fs.stat(path.join(sync, "copilot", "settings.json")), { code: "ENOENT" });
+});
+
+test("backup without --tool makes one commit per tool and syncs agents once", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  const copilotDir = path.join(home, "copilot-local");
+  const opencodeDir = path.join(home, "xdg", "opencode");
+  await fs.mkdir(copilotDir);
+  await fs.writeFile(path.join(copilotDir, "settings.json"), "hi");
+  await fs.mkdir(opencodeDir, { recursive: true });
+  await fs.writeFile(path.join(opencodeDir, "AGENTS.md"), "oc");
+  await fs.mkdir(path.join(home, ".agents", "skills", "s"), { recursive: true });
+  await fs.writeFile(path.join(home, ".agents", "skills", "s", "SKILL.md"), "skill");
+  const env = { COPILOT_HOME: copilotDir, XDG_CONFIG_HOME: path.join(home, "xdg") };
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home, env);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /== claude ==/);
+  assert.match(res.stdout, /== opencode ==/);
+  const subjects = git(sync, "log", "--format=%s").split("\n").map((line) => line.replace(/: .*/, "")).reverse();
+  assert.deepEqual(subjects, ["sync(claude)", "sync(copilot)", "sync(opencode)"]);
+  const withAgents = git(sync, "log", "--format=%H", "--", "agents").split("\n").filter(Boolean);
+  assert.equal(withAgents.length, 1);
+});
+
+test("backup without --tool checks each tool's saved includes against its own blocked list", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  const opencodeDir = path.join(home, "xdg", "opencode");
+  await fs.mkdir(path.join(opencodeDir, "node_modules"), { recursive: true });
+  await fs.writeFile(path.join(opencodeDir, "node_modules", "x.txt"), "dep");
+  await fs.mkdir(path.join(home, ".ark"), { recursive: true });
+  await fs.writeFile(path.join(home, ".ark", "config.json"), JSON.stringify({ include: { opencode: ["node_modules"] } }));
+  const env = { XDG_CONFIG_HOME: path.join(home, "xdg") };
+  const res = await runCli(["backup", "--dir", sync], claudeDir, home, env);
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /never synced/);
+  await assert.rejects(fs.stat(path.join(sync, "opencode", "node_modules")), { code: "ENOENT" });
+
+  // "sessions" is blocked for claude but not for copilot.
+  const copilotDir = path.join(home, "copilot-local");
+  await fs.mkdir(path.join(copilotDir, "sessions"), { recursive: true });
+  await fs.writeFile(path.join(copilotDir, "sessions", "a.txt"), "ok");
+  await fs.writeFile(path.join(home, ".ark", "config.json"), JSON.stringify({ include: { copilot: ["sessions"] } }));
+  const ok = await runCli(["backup", "--dir", sync], claudeDir, home, { ...env, COPILOT_HOME: copilotDir });
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.equal(await fs.readFile(path.join(sync, "copilot", "sessions", "a.txt"), "utf8"), "ok");
+});
+
+test("backup without --tool rejects --include and --exclude; with --tool they work", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  for (const flag of ["--include", "--exclude"]) {
+    const res = await runCli(["backup", "--dir", sync, flag, "x"], claudeDir, home);
+    assert.equal(res.code, 1);
+    assert.match(res.stderr, /need --tool/);
+  }
+  assert.equal(git(sync, "status", "--porcelain").trim(), "");
+  assert.equal((await runCli(["backup", "--dir", sync, "--tool", "claude", "--include", "x"], claudeDir, home)).code, 0);
+  const plain = path.join(home, "plain");
+  await fs.mkdir(path.join(plain, "claude"), { recursive: true });
+  await fs.writeFile(path.join(plain, "claude", "CLAUDE.md"), "r");
+  const restored = await runCli(["restore", "--dir", plain, "--exclude", "x"], claudeDir, home);
+  assert.equal(restored.code, 0, restored.stderr);
+});
+
+test("backup without --tool fails when no tool applies; --tool claude still works", async (t) => {
+  const home = await tmp(t);
+  const sync = path.join(home, "sync");
+  await fs.mkdir(sync);
+  const missing = path.join(home, "none");
+  const res = await runCli(["backup", "--dir", sync], missing, home);
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /No tool to back up/);
+  const ok = await runCli(["backup", "--dir", sync, "--tool", "claude"], missing, home);
+  assert.equal(ok.code, 0);
+  assert.equal(ok.stdout.trim(), "Nothing to sync.");
 });
