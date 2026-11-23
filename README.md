@@ -36,13 +36,13 @@ ark init <url>
 ark restore
 ```
 
-`ark init` clones the repository into `~/.ark/repo` (`%USERPROFILE%\.ark\repo` in cmd, `$env:USERPROFILE\.ark\repo` in PowerShell on Windows) and saves that path in `~/.ark/config.json`. Includes saved by `backup --include` (see below) live in the same file and are kept when you run `ark init` again. If the folder is already a git repository, it says so and does nothing. If the clone fails, git's error is printed.
+`ark init` clones the repository into `~/.ark/repo` (`%USERPROFILE%\.ark\repo` in cmd, `$env:USERPROFILE\.ark\repo` in PowerShell on Windows) and saves that path in `~/.ark/config.json`. Includes saved by `backup --tool <name> --include` (see below) live in the same file and are kept when you run `ark init` again. If the folder is already a git repository, it says so and does nothing. If the clone fails, git's error is printed.
 
 ### Commands
 
 ```sh
 ark init <git-url>     # one-time: clone the private repo into ~/.ark/repo
-ark backup             # local config -> ~/.ark/repo/claude and ~/.ark/repo/agents, commit, push
+ark backup             # every tool that applies (see below) -> ~/.ark/repo/<tool>, plus ~/.ark/repo/agents, commit, push
 ark backup --tool copilot  # ~/.copilot -> ~/.ark/repo/copilot, commit, push
 ark backup --tool opencode  # ~/.config/opencode -> ~/.ark/repo/opencode, commit, push
 ark backup --dry-run   # list changes without writing anything
@@ -50,18 +50,20 @@ ark restore            # git pull --ff-only, then repo config -> local config (a
 ark restore --dry-run  # list changes without writing anything
 ark backup --tool copilot --prune --dry-run  # preview removing entries missing locally from the repo copy
 ark backup --tool copilot --prune            # do it (e.g. with ~/.copilot gone, removes the synced entries from <repo>/copilot)
-ark backup --include output-styles --include notes  # also back up these paths, and remember them
-ark backup --exclude skills/scratch                 # skip this path for this run only
+ark backup --prune --dry-run                 # without --tool: preview cleaning up a tool that is no longer installed
+ark backup --tool claude --include output-styles --include notes  # also back up these paths, and remember them
+ark backup --tool claude --exclude skills/scratch   # skip this path for this run only
 ark restore --exclude skills/scratch                # skip this path for this run only
 ```
 
 - `backup` and `restore` also sync `~/.agents/skills/` and `~/.agents/.skill-lock.json` with `<repo>/agents`; these changes are reported with an `agents/` prefix.
 - `backup` copies the local config into `<repo>/<tool>`. It fails with a hint to run `ark init` if the repo folder does not exist.
+- Without `--tool`, `backup` processes every applicable tool, in the order `claude`, `copilot`, `opencode`. A tool applies if its local config folder exists or `<repo>/<tool>` exists, so `backup --prune` can clean up a tool that is no longer installed. The first plain `backup` also adds `<repo>/<tool>` for any installed tool that has config to back up and that the repo does not have yet. If no tool applies, it fails and asks for `--tool <name>`. When more than one tool is processed (also with `--dry-run`), each tool's output is preceded by a `== <tool> ==` header. A tool that fails stops the run; tools already processed stay committed (and pushed). The global agents sync runs once per invocation and its changes go into the first processed tool's commit.
 - `restore` copies `<repo>/<tool>` into the local config and deletes local files, inside the paths `backup` syncs, that are absent from the repo (see Deletions). It fails if the repo or `<repo>/<tool>` does not exist (run `ark init`, and `ark backup` on the machine that has the config).
-- `--tool <name>`: select the tool-specific adapter: `claude` (default), `copilot` or `opencode`; the global `agents` sync always runs and is not selectable.
+- `--tool <name>`: select one tool-specific adapter: `claude`, `copilot` or `opencode`. Optional for `backup` (see above); `restore` uses `claude` when it is not passed. The global `agents` sync always runs and is not selectable.
 - `--dir <path>`: use this folder instead of `~/.ark/repo` (mainly for tests).
-- `--include <path>`: `backup` only; add a file or folder from the selected tool's config to the backup and save it in `~/.ark/config.json` for later runs. Repeat it for several paths. `restore --include` is rejected. The path does not need to exist locally. Nothing is saved with `--dry-run`. It does not apply to `~/.agents`.
-- `--exclude <path>`: `backup` and `restore`; skip a file or folder in the selected tool's config for this run only (never saved). Repeat it for several paths. It does not apply to `~/.agents`.
+- `--include <path>`: `backup` only, and it needs `--tool` (paths are relative to one tool's folder); add a file or folder from the selected tool's config to the backup and save it in `~/.ark/config.json` for later runs. Repeat it for several paths. `restore --include` is rejected. The path does not need to exist locally. Nothing is saved with `--dry-run`. It does not apply to `~/.agents`.
+- `--exclude <path>`: `backup` (needs `--tool`) and `restore`; skip a file or folder in the selected tool's config for this run only (never saved). Repeat it for several paths. It does not apply to `~/.agents`.
 - `--prune`: `backup` and `restore`; also remove an allowlist or include entry that is missing entirely at the source from the destination (see Deletions). `backup --prune` deletes it from the repo copy; `restore --prune` deletes it from the local config, saving the files to `~/.ark/backups` first. Without it, such an entry is left alone.
 - `--dry-run`: print what would change (`would new: <file>` / `would update: <file>` / `would delete: <file>` / `would link: skills/<name>`) without writing files.
 
@@ -69,13 +71,13 @@ The local Claude config directory is `~/.claude`, or `CLAUDE_CONFIG_DIR` if set.
 
 Paths for `--include` and `--exclude` are relative to that directory. Absolute paths, paths containing `..` and empty paths are rejected. An `--include` of a never-synced name (see "What is synced") is an error; only the top-level segment is checked, and `--exclude` is not checked against that list.
 
-Saved includes are stored per tool in `~/.ark/config.json`:
+Saved includes are stored per tool in `~/.ark/config.json`, and keep applying to their own tool on every `backup`, with or without `--tool`:
 
 ```json
 { "repo": "/home/you/.ark/repo", "include": { "claude": ["output-styles", "notes"] } }
 ```
 
-There is no flag to remove a saved include; edit `~/.ark/config.json` by hand. If a saved include is invalid or blocked (for example `projects`), every `backup` and `restore` fails with a `config include` error until you fix the file.
+There is no flag to remove a saved include; edit `~/.ark/config.json` by hand. If a saved include is invalid or blocked (for example `projects`), the command fails with a `config include` error when it reaches that include's tool (`backup` stops there, see above; `restore` only reads the includes of the tool it restores) until you fix the file.
 
 ## Development
 
@@ -91,7 +93,7 @@ pnpm build
 The repo folder is a git repository, so `backup` and `restore` use git.
 
 - `restore` runs `git pull --ff-only` in the repo first, then copies. If the pull fails (diverged history, no remote, network), it stops with git's error and copies nothing.
-- `backup` copies, then commits any changes as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). One commit includes the selected tool's allowlist and includes under `<repo>/<tool>` (including removals of files that `backup` deleted) plus changes under `<repo>/agents/skills/` and `<repo>/agents/.skill-lock.json`, and, for tools that declare `skillLinks` (today Claude and OpenCode), `<repo>/links.json` (see "Skill links"). The subject remains `sync(<tool>): ...`; other files in `<repo>/<tool>` are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
+- `backup` copies, then commits as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). Each processed tool gets its own commit (a tool with nothing to commit gets none), and with a remote each one is pushed. A tool's commit includes the tool's allowlist and includes under `<repo>/<tool>` (including removals of files that `backup` deleted) and, for tools that declare `skillLinks` (today Claude and OpenCode), `<repo>/links.json` (see "Skill links"). The first processed tool's commit also includes the changes under `<repo>/agents/skills/` and `<repo>/agents/.skill-lock.json`. Other files in `<repo>/<tool>` are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
 - `--dry-run` runs no git writes. `backup` prints `would commit` if there would be changes; `restore` skips the git pull.
 - Your existing git identity is used. The repo is trusted: git runs its hooks and config. Conflicts are never resolved automatically: if a pull or push fails, resolve it by hand with git in the repo, then run the command again.
 - A plain folder at the repo path (no `.git`) still works for `backup` and `restore` without git.
@@ -112,11 +114,11 @@ For tools that declare `skillLinks` (today Claude and OpenCode), skills installe
 }
 ```
 
-Only names are stored, sorted, and the tool's own key is regenerated from scratch on every `backup`; other tools' keys are preserved. Only symlinks that point straight at a skill folder in `~/.agents/skills` are recorded; other symlinks stay ignored. With no such links and no existing `links.json`, nothing is written; with no links and an existing file, its own key becomes an empty list (the last backup wins, so a machine without links drops the entries of other machines for that tool). Once a skill is a symlink locally, the next `backup` deletes its old copy under `<tool>/<dir>/<name>/` from the repo. `--exclude` does not apply to links: `backup --exclude skills` still records them in `links.json`, while any older `<tool>/<dir>/<name>/` copies stay in the repo, so a later `restore` may report extra changes.
+Only names are stored, sorted, and the tool's own key is regenerated from scratch on every `backup`; other tools' keys are preserved. Only symlinks that point straight at a skill folder in `~/.agents/skills` are recorded; other symlinks stay ignored. With no such links and no existing `links.json`, nothing is written; with no links and an existing file, its own key becomes an empty list (the last backup wins, so a machine without links drops the entries of other machines for that tool). Once a skill is a symlink locally, the next `backup` deletes its old copy under `<tool>/<dir>/<name>/` from the repo. `--exclude` does not apply to links: `backup --tool <tool> --exclude skills` still records them in `links.json`, while any older `<tool>/<dir>/<name>/` copies stay in the repo, so a later `restore` may report extra changes.
 
 After restoring `~/.agents`, `restore` recreates the missing links as relative directory symlinks inside the tool's skills folder (`~/.claude/skills` or `CLAUDE_CONFIG_DIR/skills` for Claude, `<opencode config dir>/skills` for OpenCode). `restore --dry-run` prints `would link: skills/<name>`. A link that already points to the right skill (relative or absolute) is left alone silently. Anything else that already exists at the link path, or a target skill that is missing from `~/.agents/skills`, is skipped with a warning on stderr. `restore` reads only its own tool's key; a missing key means no links. Only tools that declare `skillLinks` use `links.json`; `--tool copilot` ignores it. A `links.json` that is not valid JSON or not an object stops `backup` and `restore` with an `Invalid .../links.json` error; `restore` also stops when its own `<tool>` entry is not a list (`backup` just regenerates that entry). `backup` leaves the file untouched and commits nothing, though files copied earlier in the run may already be in the repo. On a real run, `restore` stops after the local files are already restored, so the change list and the backup-folder message are not printed; earlier versions of overwritten files are still under `~/.ark/backups/<tool>/` (and `~/.ark/backups/agents/` for `~/.agents`). With `--dry-run` nothing has been restored when it stops. Fix or delete the file first.
 
-### Claude (default)
+### Claude
 
 `backup` syncs this allowlist plus any includes (saved ones and those passed with `--include` in this run), minus any `--exclude`. Paths are relative to the Claude config directory:
 
@@ -128,13 +130,13 @@ After restoring `~/.agents`, `restore` recreates the missing links as relative d
 - `hooks/`
 - `plugins/installed_plugins.json`, `plugins/known_marketplaces.json` and `plugins/cache/` (installed plugins; per plugin only the version that `installPath` in `installed_plugins.json` points to is synced, and the other cached versions are pruned from the repo; every version is synced when there is no usable manifest or the plugin is not listed in it; if the manifest lists a plugin but its active version directory is missing locally, `backup` prunes every version of that plugin from the repo (recoverable from git history); marketplace clones and catalog caches are neither synced nor pruned). The plugin manifests store absolute paths, so on `backup` the local Claude config dir is replaced with the placeholder `CLAUDE_HOME` in the repo copy, and on `restore` `CLAUDE_HOME` is expanded to the local config dir. A literal `CLAUDE_HOME` already present in a manifest is also expanded on restore. Manifests that are not valid JSON are copied unchanged
 
-`restore` takes every top-level entry present in `<repo>/<tool>` (not just the allowlist), except the never-synced names below. This includes entries that another machine added with `--include`. On a new machine, run `ark backup --include <path>` once so those includes are also saved locally and backed up from there. `restore` copies every file the repo has under those entries (for plugins, only the active version, by the same manifest rule), but it only prunes inside the paths `backup` would sync (the allowlist and the includes saved in `~/.ark/config.json`), so a local file that `backup` never uploads is never deleted. Behavior change: older versions of `restore` only copied, and only the allowlist; it now also prunes (see "Deletions" below). Run `ark restore --dry-run` first.
+`restore` takes every top-level entry present in `<repo>/<tool>` (not just the allowlist), except the never-synced names below. This includes entries that another machine added with `--include`. On a new machine, run `ark backup --tool <tool> --include <path>` once so those includes are also saved locally and backed up from there. `restore` copies every file the repo has under those entries (for plugins, only the active version, by the same manifest rule), but it only prunes inside the paths `backup` would sync (the allowlist and the includes saved in `~/.ark/config.json`), so a local file that `backup` never uploads is never deleted. Behavior change: older versions of `restore` only copied, and only the allowlist; it now also prunes (see "Deletions" below). Run `ark restore --dry-run` first.
 
 Only regular files are read. OS metadata files (`.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`, `.localized`, `ehthumbs.db`) are skipped inside synced folders. Symlinks are skipped, including allowlisted entries that are themselves symlinks (for example, a `settings.json` symlinked from a dotfiles repo is not backed up). The one exception is a skill symlink into `~/.agents/skills` in a tool that declares `skillLinks` (today Claude and OpenCode), which is recorded in `links.json` (see "Skill links").
 
 Never synced, not even with `--include`, and skipped by `restore` even if present in the repo: `.credentials.json`, `settings.local.json`, `projects`, `sessions`, `history.jsonl`, `todos`, `statsig`, `shell-snapshots`, `ide`, `file-history`, `debug`, `session-env`, `telemetry`. Names are matched case-insensitively, with NFKC normalization, and trailing dots and spaces are ignored (`projects.` and `projects ` count as `projects`). On `backup`, anything that is not in the allowlist or an include is ignored.
 
-Deletions propagate inside the paths `backup` syncs (the allowlist and the saved includes are pruned alike): a file that is gone from the source is removed from the destination (`delete: <file>`), and subfolders left empty are removed (the synced folder itself is kept). `backup` deletes files from the repo copy; `restore` deletes local files only inside those same paths when they are absent from the repo copy. So with the default allowlist `restore` prunes `plugins/cache` but never `plugins/marketplaces`, and a repo-only entry that this machine never included (for example `rules/` added by another machine) is copied but never pruned here; run `ark backup --include rules` on this machine to have it pruned too. Each deleted local file is first copied to `~/.ark/backups/<tool>/<timestamp>/`. The same applies to includes: after `ark backup --include notes`, `restore` deletes local files under `notes/` that are not in the repo (saving them first). An include that covers a whole allowlisted folder (for example `ark backup --include plugins`) makes `restore` prune all of `plugins/`, marketplaces included, just as `backup` uploads all of it. Use `--exclude notes/other.md` to protect specific files.
+Deletions propagate inside the paths `backup` syncs (the allowlist and the saved includes are pruned alike): a file that is gone from the source is removed from the destination (`delete: <file>`), and subfolders left empty are removed (the synced folder itself is kept). `backup` deletes files from the repo copy; `restore` deletes local files only inside those same paths when they are absent from the repo copy. So with the default allowlist `restore` prunes `plugins/cache` but never `plugins/marketplaces`, and a repo-only entry that this machine never included (for example `rules/` added by another machine) is copied but never pruned here; run `ark backup --tool claude --include rules` on this machine to have it pruned too. Each deleted local file is first copied to `~/.ark/backups/<tool>/<timestamp>/`. The same applies to includes: after `ark backup --tool claude --include notes`, `restore` deletes local files under `notes/` that are not in the repo (saving them first). An include that covers a whole allowlisted folder (for example `ark backup --tool claude --include plugins`) makes `restore` prune all of `plugins/`, marketplaces included, just as `backup` uploads all of it. Use `--exclude notes/other.md` to protect specific files.
 
 By default, an allowlist or include entry that is missing entirely at the source is not pruned: local files under an entry missing in the repo are never touched on `restore`, and an entry missing locally stays in the repo on `backup`. `--prune` changes that in both directions. `backup --prune` deletes such an entry from the repo copy (the deletions go into the usual `sync(<tool>)` commit, so git history can recover them). `restore --prune` deletes it from the local config, saving each file to `~/.ark/backups/<tool>/<timestamp>/` first; this includes `plugins/cache` when it is missing in the repo. It also applies to the global `agents` sync. Only allowlist entries, saved or `--include` includes (and the `agents` allowlist) are affected; never-synced files are never touched, and symlinked source entries are still skipped. `restore` still fails when `<repo>/<tool>` does not exist. A path given with `--exclude` is neither copied nor pruned, even inside a larger entry or an allowlisted folder. Paths that differ only by case are treated as the same file (also when entries overlap), so a case-only rename never deletes the live file.
 
@@ -208,7 +210,7 @@ Implement the `ToolAdapter` interface from `src/adapters/types.ts`:
 
 Then register the adapter in `src/adapters/index.ts` and add its name to the `--tool` usage string in `src/cli.ts`. See `src/adapters/claude.ts` for an example.
 
-Adapters that should always run alongside the selected tool, and must not be selectable with `--tool`, belong in `globalAdapters` in `src/adapters/index.ts`.
+Adapters that should run once per `backup`/`restore` run regardless of the selected tool, and must not be selectable with `--tool`, belong in `globalAdapters` in `src/adapters/index.ts`.
 
 ## License
 
