@@ -457,3 +457,43 @@ test("an excluded file inside an entry is left alone while siblings are pruned",
   assert.deepEqual(changes, [{ file: path.join("skills", "a", "gone.md"), kind: "delete" }]);
   assert.deepEqual((await fs.readdir(path.join(remote, "skills", "a"))).sort(), ["keep.md", "mine.md"]);
 });
+
+test("pruneMissing deletes the destination copy of an entry missing from the source", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(local, "CLAUDE.md", "x");
+  await write(remote, "skills/a/SKILL.md", "gone");
+  assert.deepEqual(await copyFiles(local, remote, claude.allowlist, { dryRun: false, pruneMissing: true }), [
+    { file: "CLAUDE.md", kind: "new" },
+    { file: path.join("skills", "a", "SKILL.md"), kind: "delete" },
+  ]);
+  await assert.rejects(fs.stat(path.join(remote, "skills", "a")));
+});
+
+test("pruneMissing dry run reports the deletion and changes nothing", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  await write(remote, "skills/a/SKILL.md", "keep");
+  assert.deepEqual(await copyFiles(local, remote, claude.allowlist, { dryRun: true, pruneMissing: true }), [
+    { file: path.join("skills", "a", "SKILL.md"), kind: "delete" },
+  ]);
+  assert.equal(await fs.readFile(path.join(remote, "skills", "a", "SKILL.md"), "utf8"), "keep");
+});
+
+test("pruneMissing keeps excluded paths and symlinked source entries", async (t) => {
+  const local = await tmp(t);
+  const remote = await tmp(t);
+  const elsewhere = await tmp(t);
+  await fs.symlink(elsewhere, path.join(local, "agents"), "junction");
+  await write(remote, "skills/a/SKILL.md", "gone");
+  await write(remote, "skills/b/SKILL.md", "excluded");
+  await write(remote, "agents/x.md", "linked");
+  const changes = await copyFiles(local, remote, [...claude.allowlist, "agents"], {
+    dryRun: false,
+    pruneMissing: true,
+    exclude: [path.join("skills", "b")],
+  });
+  assert.deepEqual(changes, [{ file: path.join("skills", "a", "SKILL.md"), kind: "delete" }]);
+  assert.equal(await fs.readFile(path.join(remote, "skills", "b", "SKILL.md"), "utf8"), "excluded");
+  assert.equal(await fs.readFile(path.join(remote, "agents", "x.md"), "utf8"), "linked");
+});

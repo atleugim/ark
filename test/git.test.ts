@@ -1202,3 +1202,127 @@ test("restore warns and continues when the skills folder is read-only", opts, as
     await fs.chmod(skills, 0o755);
   }
 });
+
+test("backup --prune commits the removal of entries missing locally, including global agents", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(claudeDir, "CLAUDE.md"), "hello");
+  await writeFile(path.join(home, ".agents", "skills", "x", "SKILL.md"), "shared");
+  await writeFile(path.join(home, ".agents", ".skill-lock.json"), "{}");
+  assert.equal((await runCli(["backup", "--dir", sync], claudeDir, home)).code, 0);
+  await fs.rm(claudeDir, { recursive: true });
+  await fs.rm(path.join(home, ".agents"), { recursive: true });
+  const plain = await runCli(["backup", "--dir", sync], claudeDir, home);
+  assert.match(plain.stdout, /Nothing to sync\./);
+  assert.equal(await fs.readFile(path.join(sync, "claude", "CLAUDE.md"), "utf8"), "hello");
+  const res = await runCli(["backup", "--dir", sync, "--prune"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  await assert.rejects(fs.stat(path.join(sync, "claude", "CLAUDE.md")));
+  await assert.rejects(fs.stat(path.join(sync, "agents", "skills", "x", "SKILL.md")));
+  await assert.rejects(fs.stat(path.join(sync, "agents", ".skill-lock.json")));
+  const deleted = git(sync, "show", "--name-status", "--format=", "HEAD");
+  assert.match(deleted, /^D\tclaude\/CLAUDE\.md$/m);
+  assert.match(deleted, /^D\tagents\/skills\/x\/SKILL\.md$/m);
+  assert.match(deleted, /^D\tagents\/\.skill-lock\.json$/m);
+  assert.equal(git(sync, "status", "--porcelain"), "");
+});
+
+test("dry-run backup --prune reports the deletion and changes nothing", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await initRepo(sync);
+  await writeFile(path.join(claudeDir, "CLAUDE.md"), "hello");
+  assert.equal((await runCli(["backup", "--dir", sync], claudeDir, home)).code, 0);
+  await fs.rm(path.join(claudeDir, "CLAUDE.md"));
+  const res = await runCli(["backup", "--dir", sync, "--prune", "--dry-run"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /would delete: CLAUDE\.md/);
+  assert.equal(await fs.readFile(path.join(sync, "claude", "CLAUDE.md"), "utf8"), "hello");
+  assert.equal(git(sync, "rev-list", "--count", "HEAD"), "1");
+});
+
+test("restore --prune deletes allowlisted entries missing in the repo after backing them up", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "claude", "CLAUDE.md"), "hello");
+  await writeFile(path.join(claudeDir, "commands", "x.md"), "mine");
+  await writeFile(path.join(claudeDir, "keep.txt"), "never synced");
+  await writeFile(path.join(claudeDir, ".credentials.json"), "secret");
+  const plain = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(plain.code, 0, plain.stderr);
+  assert.equal(await fs.readFile(path.join(claudeDir, "commands", "x.md"), "utf8"), "mine");
+  const res = await runCli(["restore", "--dir", sync, "--prune"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /delete: commands\/x\.md/);
+  await assert.rejects(fs.stat(path.join(claudeDir, "commands", "x.md")));
+  const stamps = await fs.readdir(path.join(home, ".ark", "backups", "claude"));
+  assert.match(res.stdout, new RegExp(`Previous local files saved to .*${stamps[0]}`));
+  assert.equal(await fs.readFile(path.join(home, ".ark", "backups", "claude", stamps[0], "commands", "x.md"), "utf8"), "mine");
+  assert.equal(await fs.readFile(path.join(claudeDir, "keep.txt"), "utf8"), "never synced");
+  assert.equal(await fs.readFile(path.join(claudeDir, ".credentials.json"), "utf8"), "secret");
+});
+
+test("restore --prune honors --exclude and --dry-run", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "claude", "CLAUDE.md"), "hello");
+  await writeFile(path.join(claudeDir, "commands", "x.md"), "mine");
+  await writeFile(path.join(claudeDir, "hooks", "h.sh"), "mine");
+  const dry = await runCli(["restore", "--dir", sync, "--prune", "--dry-run", "--exclude", "hooks"], claudeDir, home);
+  assert.equal(dry.code, 0, dry.stderr);
+  assert.match(dry.stdout, /would delete: commands\/x\.md/);
+  assert.doesNotMatch(dry.stdout, /hooks/);
+  assert.equal(await fs.readFile(path.join(claudeDir, "commands", "x.md"), "utf8"), "mine");
+  await assert.rejects(fs.stat(path.join(home, ".ark", "backups")), { code: "ENOENT" });
+  const res = await runCli(["restore", "--dir", sync, "--prune", "--exclude", "hooks"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  await assert.rejects(fs.stat(path.join(claudeDir, "commands", "x.md")));
+  assert.equal(await fs.readFile(path.join(claudeDir, "hooks", "h.sh"), "utf8"), "mine");
+});
+
+test("restore --prune still fails when the repo folder is missing", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "shared");
+  await writeFile(path.join(claudeDir, "commands", "x.md"), "mine");
+  const res = await runCli(["restore", "--dir", sync, "--prune"], claudeDir, home);
+  assert.notEqual(res.code, 0);
+  assert.match(res.stderr, /Folder .*claude.* does not exist/);
+  assert.equal(await fs.readFile(path.join(claudeDir, "commands", "x.md"), "utf8"), "mine");
+});
+
+test("global agents restore --prune deletes local entries missing in the agents repo", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "claude", "CLAUDE.md"), "hello");
+  await writeFile(path.join(home, ".agents", "skills", "a", "SKILL.md"), "local");
+  await writeFile(path.join(home, ".agents", ".skill-lock.json"), "{}");
+  await writeFile(path.join(home, ".agents", "other.txt"), "never synced");
+  const res = await runCli(["restore", "--dir", sync, "--prune"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /delete: agents\/skills\/a\/SKILL\.md/);
+  await assert.rejects(fs.stat(path.join(home, ".agents", "skills", "a", "SKILL.md")));
+  await assert.rejects(fs.stat(path.join(home, ".agents", ".skill-lock.json")));
+  assert.equal(await fs.readFile(path.join(home, ".agents", "other.txt"), "utf8"), "never synced");
+  const stamps = await fs.readdir(path.join(home, ".ark", "backups", "agents"));
+  assert.equal(await fs.readFile(path.join(home, ".ark", "backups", "agents", stamps[0], "skills", "a", "SKILL.md"), "utf8"), "local");
+  assert.equal(await fs.readFile(path.join(home, ".ark", "backups", "agents", stamps[0], ".skill-lock.json"), "utf8"), "{}");
+  assert.match(res.stdout, /Previous local files saved to .*agents/);
+});
+
+test("restore --prune deletes the local plugin cache when the repo has none", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  await writeFile(path.join(sync, "claude", "CLAUDE.md"), "hello");
+  await writeFile(path.join(sync, "claude", "plugins", "installed_plugins.json"), JSON.stringify({ plugins: { "p@m": [{ installPath: path.join(claudeDir, "plugins", "cache", "m", "p", "1.0.0") }] } }));
+  const active = path.join(claudeDir, "plugins", "cache", "m", "p", "1.0.0", "a.txt");
+  const stale = path.join(claudeDir, "plugins", "cache", "m", "p", "0.9.0", "b.txt");
+  await writeFile(active, "a");
+  await writeFile(stale, "b");
+  const plain = await runCli(["restore", "--dir", sync], claudeDir, home);
+  assert.equal(plain.code, 0, plain.stderr);
+  assert.equal(await fs.readFile(active, "utf8"), "a");
+  assert.equal(await fs.readFile(stale, "utf8"), "b");
+  const res = await runCli(["restore", "--dir", sync, "--prune"], claudeDir, home);
+  assert.equal(res.code, 0, res.stderr);
+  await assert.rejects(fs.stat(active));
+  await assert.rejects(fs.stat(stale));
+  const [stamp] = await fs.readdir(path.join(home, ".ark", "backups", "claude"));
+  const saved = path.join(home, ".ark", "backups", "claude", stamp, "plugins", "cache", "m", "p");
+  assert.equal(await fs.readFile(path.join(saved, "1.0.0", "a.txt"), "utf8"), "a");
+  assert.equal(await fs.readFile(path.join(saved, "0.9.0", "b.txt"), "utf8"), "b");
+});

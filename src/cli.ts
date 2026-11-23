@@ -11,7 +11,7 @@ import { LINKS_FILE, restoreSkillLinks, scanSkillLinks, writeLinksManifest } fro
 import { copyFiles, isBlocked, isErrno, listFiles, listTopLevel, normalizeUserPath, uniqueByKey } from "./sync.ts";
 
 const usage =
-  "Usage: ark init <git-url>\n       ark <backup|restore> [--tool claude|copilot|opencode] [--dry-run] [--include <path>]... [--exclude <path>]...\n       ark -h|--help\nThe repo lives in ~/.ark/repo (--dir <path> overrides it). ~/.agents (skills/ and .skill-lock.json) is also synced on every backup/restore. --include (backup only) adds a file or folder (relative to the selected tool's folder) to the backup and saves it in ~/.ark/config.json for later runs; repeat it for several. --exclude skips a file or folder (relative to the selected tool's folder) for this run only; repeat it for several. Files removed from a synced folder are removed on the other side too (restore saves them to ~/.ark/backups first).";
+  "Usage: ark init <git-url>\n       ark <backup|restore> [--tool claude|copilot|opencode] [--dry-run] [--prune] [--include <path>]... [--exclude <path>]...\n       ark -h|--help\nThe repo lives in ~/.ark/repo (--dir <path> overrides it). ~/.agents (skills/ and .skill-lock.json) is also synced on every backup/restore. --include (backup only) adds a file or folder (relative to the selected tool's folder) to the backup and saves it in ~/.ark/config.json for later runs; repeat it for several. --exclude skips a file or folder (relative to the selected tool's folder) for this run only; repeat it for several. Files removed from a synced folder are removed on the other side too (restore saves them to ~/.ark/backups first). --prune also removes an allowlisted entry that is missing entirely at the source from the destination (backup: the repo copy; restore: the local copy, saved to ~/.ark/backups first).";
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -20,6 +20,7 @@ async function main(): Promise<void> {
       tool: { type: "string", default: "claude" },
       dir: { type: "string" },
       "dry-run": { type: "boolean", default: false },
+      prune: { type: "boolean", default: false },
       include: { type: "string", multiple: true, default: [] },
       exclude: { type: "string", multiple: true, default: [] },
       help: { type: "boolean", short: "h", default: false },
@@ -97,9 +98,9 @@ async function main(): Promise<void> {
     };
     const backupEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes, ...runIncludes]);
     const filter = await adapter.activeFilter?.(local);
-    ({ changes, paths: backupPaths } = await backupAdapter(adapter, backupEntries, { dryRun, guardDest: true, transform: backupTransform, exclude, filter }));
+    ({ changes, paths: backupPaths } = await backupAdapter(adapter, backupEntries, { dryRun, guardDest: true, transform: backupTransform, exclude, filter, pruneMissing: values.prune }));
     for (const globalAdapter of globalAdapters) {
-      const result = await backupAdapter(globalAdapter, globalAdapter.allowlist, { dryRun, guardDest: true, exclude: [] });
+      const result = await backupAdapter(globalAdapter, globalAdapter.allowlist, { dryRun, guardDest: true, exclude: [], pruneMissing: values.prune });
       changes.push(...result.changes.map((change) => ({ ...change, file: toRepoPath(globalAdapter, change.file) })));
       backupPaths.push(...result.paths);
     }
@@ -123,7 +124,7 @@ async function main(): Promise<void> {
     const pruneEntries = uniqueByKey([...adapter.allowlist, ...savedIncludes]);
     // The repo manifest decides which plugin versions are live; the other versions in the repo stay there.
     const filter = await adapter.activeFilter?.(remote);
-    changes = await copyFiles(remote, local, entries, { dryRun, backupDir, transform: restoreTransform, exclude, pruneEntries, filter });
+    changes = await copyFiles(remote, local, entries, { dryRun, backupDir, transform: restoreTransform, exclude, pruneEntries, filter, pruneMissing: values.prune });
     // Only updates and deletes replace existing local files.
     if (!dryRun && changes.some((change) => change.kind !== "new")) savedBackupDirs.push(backupDir);
     for (const globalAdapter of globalAdapters) {
@@ -132,7 +133,7 @@ async function main(): Promise<void> {
       const globalBackupDir = path.join(homedir, ".ark", "backups", globalAdapter.name, stamp);
       const globalEntries = await listTopLevel(globalRemote);
       const copied = await copyFiles(globalRemote, globalLocal, globalEntries, {
-        dryRun, backupDir: globalBackupDir, exclude: [], pruneEntries: globalAdapter.allowlist,
+        dryRun, backupDir: globalBackupDir, exclude: [], pruneEntries: globalAdapter.allowlist, pruneMissing: values.prune,
       });
       if (!dryRun && copied.some((change) => change.kind !== "new")) savedBackupDirs.push(globalBackupDir);
       changes.push(...copied.map((change) => ({ ...change, file: toRepoPath(globalAdapter, change.file) })));

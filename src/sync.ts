@@ -147,6 +147,8 @@ export async function copyFiles(
     pruneEntries?: readonly string[];
     // Source files failing this are treated as absent: not copied, and pruned from the destination.
     filter?: (file: string) => boolean;
+    // Also delete the destination copy of an entry that is missing entirely from the source.
+    pruneMissing?: boolean;
   },
 ): Promise<Change[]> {
   const changes: Change[] = [];
@@ -206,15 +208,16 @@ async function prune(
   from: string,
   to: string,
   allowlist: readonly string[],
-  opts: { dryRun: boolean; backupDir?: string; guardDest?: boolean; exclude?: readonly string[]; filter?: (file: string) => boolean },
+  opts: { dryRun: boolean; backupDir?: string; guardDest?: boolean; exclude?: readonly string[]; filter?: (file: string) => boolean; pruneMissing?: boolean },
   changes: Change[],
 ): Promise<void> {
   for (const entry of allowlist) {
     const item = path.normalize(entry);
     const stat = await statEntry(from, item);
-    // A missing or symlinked source entry says nothing about what should exist.
-    if (!stat?.isFile() && !stat?.isDirectory()) continue;
-    const kept = new Set((await listSource(from, [item], opts)).map(pathKey));
+    // A missing or symlinked source entry says nothing about what should exist, unless pruneMissing opts in for the missing case.
+    const missing = stat === undefined && opts.pruneMissing;
+    if (!missing && !stat?.isFile() && !stat?.isDirectory()) continue;
+    const kept = new Set(missing ? [] : (await listSource(from, [item], opts)).map(pathKey));
     for (const file of await listFiles(to, [item], opts.exclude)) {
       if (kept.has(pathKey(file))) continue;
       if (opts.guardDest) await assertNoSymlink(to, file);
