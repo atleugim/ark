@@ -43,7 +43,7 @@ async function initRepo(dir: string): Promise<void> {
 
 async function runCli(args: string[], claudeDir: string, home: string, env: NodeJS.ProcessEnv = {}) {
   return run(process.execPath, [cli, ...args], {
-    env: { ...process.env, ...gitEnv, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claudeDir, XDG_CONFIG_HOME: path.join(home, "xdg-default"), COPILOT_HOME: path.join(home, "copilot-default"), ...env },
+    env: { ...process.env, ...gitEnv, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claudeDir, XDG_CONFIG_HOME: path.join(home, "xdg-default"), COPILOT_HOME: path.join(home, "copilot-default"), PI_CODING_AGENT_DIR: path.join(home, "pi-default"), ...env },
   }).then(
     (r) => ({ code: 0, ...r }),
     (e: { code: number; stdout: string; stderr: string }) => ({ code: e.code, stdout: e.stdout, stderr: e.stderr }),
@@ -134,6 +134,34 @@ test("OpenCode backup and restore sync only allowlisted entries", opts, async (t
   assert.equal(await fs.readFile(path.join(openDir, "agents", "review.md"), "utf8"), "agent");
   assert.equal(await fs.readFile(path.join(openDir, "service.json"), "utf8"), "private");
   assert.equal(await fs.readFile(path.join(openDir, "agents_docs", "doc.md"), "utf8"), "doc");
+});
+
+test("pi backup and restore sync only allowlisted entries", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const piDir = path.join(home, "pi-custom");
+  const env = { PI_CODING_AGENT_DIR: piDir };
+  await initRepo(sync);
+  await writeFile(path.join(piDir, "settings.json"), "{}");
+  await writeFile(path.join(piDir, "AGENTS.md"), "rules");
+  await writeFile(path.join(piDir, "skills", "check", "SKILL.md"), "skill");
+  await writeFile(path.join(piDir, "auth.json"), "secret");
+  await writeFile(path.join(piDir, "sessions", "s.jsonl"), "log");
+
+  const res = await runCli(["backup", "--dir", sync, "--tool", "pi"], claudeDir, home, env);
+  assert.equal(res.code, 0, res.stderr);
+  assert.deepEqual(git(sync, "ls-tree", "-r", "--name-only", "HEAD").split("\n"), [
+    "pi/AGENTS.md",
+    "pi/settings.json",
+    "pi/skills/check/SKILL.md",
+  ]);
+
+  await fs.rm(path.join(piDir, "settings.json"));
+  const plain = path.join(home, "plain");
+  await fs.cp(path.join(sync, "pi"), path.join(plain, "pi"), { recursive: true });
+  const back = await runCli(["restore", "--dir", plain, "--tool", "pi"], claudeDir, home, env);
+  assert.equal(back.code, 0, back.stderr);
+  assert.equal(await fs.readFile(path.join(piDir, "settings.json"), "utf8"), "{}");
+  assert.equal(await fs.readFile(path.join(piDir, "auth.json"), "utf8"), "secret");
 });
 
 test("Copilot restore restores allowlisted entries and leaves blocked entries untouched", opts, async (t) => {
@@ -413,23 +441,27 @@ async function writeFile(file: string, data: string): Promise<void> {
   await fs.writeFile(file, data);
 }
 
-test("backup commits global agents skills and lock alongside the selected tool", opts, async (t) => {
+test("backup commits global agents entries alongside the selected tool", opts, async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   await initRepo(sync);
   await writeFile(path.join(home, ".agents", "skills", "x", "SKILL.md"), "shared skill");
   await writeFile(path.join(home, ".agents", ".skill-lock.json"), "{}");
+  await writeFile(path.join(home, ".agents", "docs", "lang", "x.md"), "shared doc");
   await writeFile(path.join(home, ".agents", "other.txt"), "not synced");
   const res = await runCli(["backup", "--dir", sync], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.equal(await fs.readFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "utf8"), "shared skill");
   assert.equal(await fs.readFile(path.join(sync, "agents", ".skill-lock.json"), "utf8"), "{}");
+  assert.equal(await fs.readFile(path.join(sync, "agents", "docs", "lang", "x.md"), "utf8"), "shared doc");
   assert.equal(git(sync, "rev-list", "--count", "HEAD"), "1");
   assert.match(git(sync, "log", "-1", "--format=%s"), /^sync\(claude\): \d{4}-/);
   assert.deepEqual(git(sync, "ls-tree", "-r", "--name-only", "HEAD").split("\n"), [
     "agents/.skill-lock.json",
+    "agents/docs/lang/x.md",
     "agents/skills/x/SKILL.md",
     "claude/CLAUDE.md",
   ]);
+  assert.match(res.stdout, /^new: agents\/docs\/lang\/x\.md$/m);
   assert.match(res.stdout, /^new: CLAUDE\.md$/m);
   assert.match(res.stdout, /^new: agents\/skills\/x\/SKILL\.md$/m);
   assert.match(res.stdout, /^new: agents\/\.skill-lock\.json$/m);
@@ -504,7 +536,7 @@ test("global agents is not a selectable tool", async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   const res = await runCli(["backup", "--dir", sync, "--tool", "agents"], claudeDir, home);
   assert.equal(res.code, 1);
-  assert.equal(res.stderr.trim(), 'Unknown tool "agents". Available: claude, copilot, opencode');
+  assert.equal(res.stderr.trim(), 'Unknown tool "agents". Available: claude, copilot, opencode, pi');
 });
 
 test("global agents restore copies and prunes independently of selected tool filters", async (t) => {
@@ -515,6 +547,7 @@ test("global agents restore copies and prunes independently of selected tool fil
   await writeFile(path.join(sync, "claude", "skills", "x", "SKILL.md"), "claude skill");
   await writeFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "shared skill");
   await writeFile(path.join(sync, "agents", ".skill-lock.json"), "new lock");
+  await writeFile(path.join(sync, "agents", "docs", "lang", "x.md"), "shared doc");
   await writeFile(path.join(sync, "agents", "rules", "repo.md"), "repo only");
   await writeFile(path.join(agents, "skills", "gone", "SKILL.md"), "old skill");
   await writeFile(path.join(agents, ".skill-lock.json"), "old lock");
@@ -525,6 +558,7 @@ test("global agents restore copies and prunes independently of selected tool fil
   assert.equal(res.code, 0, res.stderr);
   assert.equal(await fs.readFile(path.join(agents, "skills", "x", "SKILL.md"), "utf8"), "shared skill");
   assert.equal(await fs.readFile(path.join(agents, ".skill-lock.json"), "utf8"), "new lock");
+  assert.equal(await fs.readFile(path.join(agents, "docs", "lang", "x.md"), "utf8"), "shared doc");
   assert.equal(await fs.readFile(path.join(agents, "rules", "repo.md"), "utf8"), "repo only");
   assert.equal(await fs.readFile(path.join(agents, "rules", "local.md"), "utf8"), "keep");
   assert.equal(await fs.readFile(path.join(agents, "other.txt"), "utf8"), "keep");
