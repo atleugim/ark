@@ -4,6 +4,6 @@ import type { ToolAdapter } from "./types.ts";
 export const agents: ToolAdapter = {
   name: "agents",
   resolveHome: (_env, homedir) => path.join(homedir, ".agents"),
-  allowlist: ["skills", ".skill-lock.json"],
+  allowlist: ["skills", "docs", ".skill-lock.json"],
   blocked: [],
 };

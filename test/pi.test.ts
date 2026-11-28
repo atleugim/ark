@@ -27,10 +27,10 @@ test("allowlist and blocked names are disjoint", () => {
 });
 
 test("allowlist includes every expected pi path", () => {
-  for (const name of ["AGENTS.md", "settings.json", "agents", "agents_docs", "extensions", "prompts", "skills"]) {
+  for (const name of ["AGENTS.md", "settings.json", "agents", "extensions", "prompts", "skills"]) {
     assert.ok(pi.allowlist.includes(name), name);
   }
-  assert.equal(pi.allowlist.length, 7);
+  assert.equal(pi.allowlist.length, 6);
 });
 
 test("blocked includes every expected machine-local pi path", () => {

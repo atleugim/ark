@@ -57,7 +57,7 @@ ark backup --tool claude --exclude skills/scratch   # skip this path for this ru
 ark restore --exclude skills/scratch                # skip this path for this run only
 ```
 
-- `backup` and `restore` also sync `~/.agents/skills/` and `~/.agents/.skill-lock.json` with `<repo>/agents`; these changes are reported with an `agents/` prefix.
+- `backup` and `restore` also sync `~/.agents/skills/`, `~/.agents/docs/` and `~/.agents/.skill-lock.json` with `<repo>/agents`; these changes are reported with an `agents/` prefix.
 - `backup` copies the local config into `<repo>/<tool>`. It fails with a hint to run `ark init` if the repo folder does not exist.
 - Without `--tool`, `backup` processes every applicable tool, in the order `claude`, `copilot`, `opencode`, `pi`. A tool applies if its local config folder exists or `<repo>/<tool>` exists, so `backup --prune` can clean up a tool that is no longer installed. The first plain `backup` also adds `<repo>/<tool>` for any installed tool that has config to back up and that the repo does not have yet. If no tool applies, it fails and asks for `--tool <name>`. When more than one tool is processed (also with `--dry-run`), each tool's output is preceded by a `== <tool> ==` header. A tool that fails stops the run; tools already processed stay committed (and pushed). The global agents sync runs once per invocation and its changes go into the first processed tool's commit.
 - `restore` copies `<repo>/<tool>` into the local config and deletes local files, inside the paths `backup` syncs, that are absent from the repo (see Deletions). It fails if the repo or `<repo>/<tool>` does not exist (run `ark init`, and `ark backup` on the machine that has the config).
@@ -94,7 +94,7 @@ pnpm build
 The repo folder is a git repository, so `backup` and `restore` use git.
 
 - `restore` runs `git pull --ff-only` in the repo first, then copies. If the pull fails (diverged history, no remote, network), it stops with git's error and copies nothing.
-- `backup` copies, then commits as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). Each processed tool gets its own commit (a tool with nothing to commit gets none), and with a remote each one is pushed. A tool's commit includes the tool's allowlist and includes under `<repo>/<tool>` (including removals of files that `backup` deleted) and, for tools that declare `skillLinks` (today Claude, OpenCode and Pi), `<repo>/links.json` (see "Skill links"). The first processed tool's commit also includes the changes under `<repo>/agents/skills/` and `<repo>/agents/.skill-lock.json`. Other files in `<repo>/<tool>` are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
+- `backup` copies, then commits as `sync(<tool>): <ISO 8601 UTC timestamp>`, and pushes with `git push --set-upstream origin HEAD` (plain `git push` once an upstream is set). Each processed tool gets its own commit (a tool with nothing to commit gets none), and with a remote each one is pushed. A tool's commit includes the tool's allowlist and includes under `<repo>/<tool>` (including removals of files that `backup` deleted) and, for tools that declare `skillLinks` (today Claude, OpenCode and Pi), `<repo>/links.json` (see "Skill links"). The first processed tool's commit also includes the changes under `<repo>/agents/skills/`, `<repo>/agents/docs/` and `<repo>/agents/.skill-lock.json`. Other files in `<repo>/<tool>` are left alone. With no changes it does not commit, but it still pushes so an earlier failed push is retried. `backup` does not pull first: run `restore` before `backup` when another machine may have pushed.
 - `--dry-run` runs no git writes. `backup` prints `would commit` if there would be changes; `restore` skips the git pull.
 - Your existing git identity is used. The repo is trusted: git runs its hooks and config. Conflicts are never resolved automatically: if a pull or push fails, resolve it by hand with git in the repo, then run the command again.
 - A plain folder at the repo path (no `.git`) still works for `backup` and `restore` without git.
@@ -103,7 +103,7 @@ The repo folder is a git repository, so `backup` and `restore` use git.
 
 ### Global agent configuration
 
-Every `backup` and `restore` also syncs `~/.agents/skills/` and `~/.agents/.skill-lock.json` with `<repo>/agents/`. A missing `~/.agents` source or `<repo>/agents` repo directory is skipped unless `--prune` is given; symlinked source entries are skipped. Backup syncs only these two entries. Restore copies entries present in `<repo>/agents/`, but prunes local files only inside `skills/` and `.skill-lock.json`; other local files are not pruned (though matching repo entries can be copied over them). `--exclude` is not applied to this sync. With `--prune`, a missing entry (`skills` or `.skill-lock.json`) is also deleted from the other side: `backup` removes it from `<repo>/agents`, `restore` removes it from `~/.agents` (saved first to `~/.ark/backups/agents/<timestamp>/`).
+Every `backup` and `restore` also syncs `~/.agents/skills/`, `~/.agents/docs/` and `~/.agents/.skill-lock.json` with `<repo>/agents/`. A missing `~/.agents` source or `<repo>/agents` repo directory is skipped unless `--prune` is given; symlinked source entries are skipped. Backup syncs only these three entries. Restore copies entries present in `<repo>/agents/`, but prunes local files only inside `skills/`, `docs/` and `.skill-lock.json`; other local files are not pruned (though matching repo entries can be copied over them). `--exclude` is not applied to this sync. With `--prune`, a missing entry (`skills`, `docs` or `.skill-lock.json`) is also deleted from the other side: `backup` removes it from `<repo>/agents`, `restore` removes it from `~/.agents` (saved first to `~/.ark/backups/agents/<timestamp>/`).
 
 ### Skill links
 
@@ -176,7 +176,7 @@ The same include, exclude, restore and deletion rules apply, with the repo folde
 - `skills/`
 - `plugins/`
 
-Other files, such as a custom `agents_docs` folder, can be added with `--include`.
+Other files, such as a custom `notes` folder, can be added with `--include`.
 
 Never synced, not even with `--include`, and skipped by `restore` even if present in the repo: `service.json`, `node_modules`, `package.json`, `bun.lock`, `package-lock.json`, `pnpm-lock.yaml`.
 
@@ -187,7 +187,6 @@ The same include, exclude, restore and deletion rules apply, with the repo folde
 - `AGENTS.md`
 - `settings.json`
 - `agents/`
-- `agents_docs/`
 - `extensions/`
 - `prompts/`
 - `skills/`

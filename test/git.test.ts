@@ -441,23 +441,27 @@ async function writeFile(file: string, data: string): Promise<void> {
   await fs.writeFile(file, data);
 }
 
-test("backup commits global agents skills and lock alongside the selected tool", opts, async (t) => {
+test("backup commits global agents entries alongside the selected tool", opts, async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   await initRepo(sync);
   await writeFile(path.join(home, ".agents", "skills", "x", "SKILL.md"), "shared skill");
   await writeFile(path.join(home, ".agents", ".skill-lock.json"), "{}");
+  await writeFile(path.join(home, ".agents", "docs", "lang", "x.md"), "shared doc");
   await writeFile(path.join(home, ".agents", "other.txt"), "not synced");
   const res = await runCli(["backup", "--dir", sync], claudeDir, home);
   assert.equal(res.code, 0, res.stderr);
   assert.equal(await fs.readFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "utf8"), "shared skill");
   assert.equal(await fs.readFile(path.join(sync, "agents", ".skill-lock.json"), "utf8"), "{}");
+  assert.equal(await fs.readFile(path.join(sync, "agents", "docs", "lang", "x.md"), "utf8"), "shared doc");
   assert.equal(git(sync, "rev-list", "--count", "HEAD"), "1");
   assert.match(git(sync, "log", "-1", "--format=%s"), /^sync\(claude\): \d{4}-/);
   assert.deepEqual(git(sync, "ls-tree", "-r", "--name-only", "HEAD").split("\n"), [
     "agents/.skill-lock.json",
+    "agents/docs/lang/x.md",
     "agents/skills/x/SKILL.md",
     "claude/CLAUDE.md",
   ]);
+  assert.match(res.stdout, /^new: agents\/docs\/lang\/x\.md$/m);
   assert.match(res.stdout, /^new: CLAUDE\.md$/m);
   assert.match(res.stdout, /^new: agents\/skills\/x\/SKILL\.md$/m);
   assert.match(res.stdout, /^new: agents\/\.skill-lock\.json$/m);
@@ -543,6 +547,7 @@ test("global agents restore copies and prunes independently of selected tool fil
   await writeFile(path.join(sync, "claude", "skills", "x", "SKILL.md"), "claude skill");
   await writeFile(path.join(sync, "agents", "skills", "x", "SKILL.md"), "shared skill");
   await writeFile(path.join(sync, "agents", ".skill-lock.json"), "new lock");
+  await writeFile(path.join(sync, "agents", "docs", "lang", "x.md"), "shared doc");
   await writeFile(path.join(sync, "agents", "rules", "repo.md"), "repo only");
   await writeFile(path.join(agents, "skills", "gone", "SKILL.md"), "old skill");
   await writeFile(path.join(agents, ".skill-lock.json"), "old lock");
@@ -553,6 +558,7 @@ test("global agents restore copies and prunes independently of selected tool fil
   assert.equal(res.code, 0, res.stderr);
   assert.equal(await fs.readFile(path.join(agents, "skills", "x", "SKILL.md"), "utf8"), "shared skill");
   assert.equal(await fs.readFile(path.join(agents, ".skill-lock.json"), "utf8"), "new lock");
+  assert.equal(await fs.readFile(path.join(agents, "docs", "lang", "x.md"), "utf8"), "shared doc");
   assert.equal(await fs.readFile(path.join(agents, "rules", "repo.md"), "utf8"), "repo only");
   assert.equal(await fs.readFile(path.join(agents, "rules", "local.md"), "utf8"), "keep");
   assert.equal(await fs.readFile(path.join(agents, "other.txt"), "utf8"), "keep");
