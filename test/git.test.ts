@@ -43,7 +43,7 @@ async function initRepo(dir: string): Promise<void> {
 
 async function runCli(args: string[], claudeDir: string, home: string, env: NodeJS.ProcessEnv = {}) {
   return run(process.execPath, [cli, ...args], {
-    env: { ...process.env, ...gitEnv, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claudeDir, XDG_CONFIG_HOME: path.join(home, "xdg-default"), COPILOT_HOME: path.join(home, "copilot-default"), ...env },
+    env: { ...process.env, ...gitEnv, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claudeDir, XDG_CONFIG_HOME: path.join(home, "xdg-default"), COPILOT_HOME: path.join(home, "copilot-default"), PI_CODING_AGENT_DIR: path.join(home, "pi-default"), ...env },
   }).then(
     (r) => ({ code: 0, ...r }),
     (e: { code: number; stdout: string; stderr: string }) => ({ code: e.code, stdout: e.stdout, stderr: e.stderr }),
@@ -134,6 +134,34 @@ test("OpenCode backup and restore sync only allowlisted entries", opts, async (t
   assert.equal(await fs.readFile(path.join(openDir, "agents", "review.md"), "utf8"), "agent");
   assert.equal(await fs.readFile(path.join(openDir, "service.json"), "utf8"), "private");
   assert.equal(await fs.readFile(path.join(openDir, "agents_docs", "doc.md"), "utf8"), "doc");
+});
+
+test("pi backup and restore sync only allowlisted entries", opts, async (t) => {
+  const { home, claudeDir, sync } = await setup(t);
+  const piDir = path.join(home, "pi-custom");
+  const env = { PI_CODING_AGENT_DIR: piDir };
+  await initRepo(sync);
+  await writeFile(path.join(piDir, "settings.json"), "{}");
+  await writeFile(path.join(piDir, "AGENTS.md"), "rules");
+  await writeFile(path.join(piDir, "skills", "check", "SKILL.md"), "skill");
+  await writeFile(path.join(piDir, "auth.json"), "secret");
+  await writeFile(path.join(piDir, "sessions", "s.jsonl"), "log");
+
+  const res = await runCli(["backup", "--dir", sync, "--tool", "pi"], claudeDir, home, env);
+  assert.equal(res.code, 0, res.stderr);
+  assert.deepEqual(git(sync, "ls-tree", "-r", "--name-only", "HEAD").split("\n"), [
+    "pi/AGENTS.md",
+    "pi/settings.json",
+    "pi/skills/check/SKILL.md",
+  ]);
+
+  await fs.rm(path.join(piDir, "settings.json"));
+  const plain = path.join(home, "plain");
+  await fs.cp(path.join(sync, "pi"), path.join(plain, "pi"), { recursive: true });
+  const back = await runCli(["restore", "--dir", plain, "--tool", "pi"], claudeDir, home, env);
+  assert.equal(back.code, 0, back.stderr);
+  assert.equal(await fs.readFile(path.join(piDir, "settings.json"), "utf8"), "{}");
+  assert.equal(await fs.readFile(path.join(piDir, "auth.json"), "utf8"), "secret");
 });
 
 test("Copilot restore restores allowlisted entries and leaves blocked entries untouched", opts, async (t) => {
@@ -504,7 +532,7 @@ test("global agents is not a selectable tool", async (t) => {
   const { home, claudeDir, sync } = await setup(t);
   const res = await runCli(["backup", "--dir", sync, "--tool", "agents"], claudeDir, home);
   assert.equal(res.code, 1);
-  assert.equal(res.stderr.trim(), 'Unknown tool "agents". Available: claude, copilot, opencode');
+  assert.equal(res.stderr.trim(), 'Unknown tool "agents". Available: claude, copilot, opencode, pi');
 });
 
 test("global agents restore copies and prunes independently of selected tool filters", async (t) => {

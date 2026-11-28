@@ -2,7 +2,7 @@
   "name": "@atleugim/ark",
   "version": "0.5.0",
   "private": true,
-  "description": "Back up and restore AI agent configuration (Claude Code, GitHub Copilot CLI and OpenCode), extensible to other AI tools.",
+  "description": "Back up and restore AI agent configuration (Claude Code, GitHub Copilot CLI, OpenCode and Pi), extensible to other AI tools.",
   "type": "module",
   "license": "MIT",
   "repository": {
